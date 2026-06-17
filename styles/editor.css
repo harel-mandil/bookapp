@@ -265,3 +265,142 @@
   .book-page-wrap { padding: 0; }
   @page { size: 6in 9in; margin: 0.75in; }
 }
+
+/* ============================================================
+   PHASE 4 — TipTap rich editor extensions: lists, tables, images,
+   alignment, find-bar, expanded toolbar.
+   ============================================================ */
+
+/* TipTap mounts a `.ProseMirror` div inside #editor — selectors target both
+   the legacy .editor div and the actual editable surface. */
+.editor .ProseMirror {
+  outline: none;
+  min-height: 400px;
+}
+.editor .ProseMirror p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  color: #c4bdae;
+  font-style: italic;
+  float: left;
+  height: 0;
+  pointer-events: none;
+}
+
+/* Lists */
+.editor ul, .editor ol {
+  margin: 0.6em 0 0.6em 1.5em;
+  padding-left: 1em;
+  text-indent: 0;
+}
+.editor ul li, .editor ol li {
+  margin: 0.2em 0;
+  text-indent: 0;
+}
+.editor ul li > p, .editor ol li > p {
+  margin: 0;
+  text-indent: 0;
+}
+
+/* Tables — break out of the 600px page so they're readable */
+.editor .editor-table,
+.editor table {
+  border-collapse: collapse;
+  margin: 1em auto;
+  width: 100%;
+  max-width: 720px;
+  font-size: 14px;
+  text-indent: 0;
+  table-layout: fixed;
+  overflow: hidden;
+}
+.editor th,
+.editor td {
+  border: 1px solid #d4cfc1;
+  padding: 6px 10px;
+  vertical-align: top;
+  position: relative;
+  text-align: left;
+  text-indent: 0;
+}
+.editor th {
+  background: #f7f3ec;
+  font-weight: 600;
+}
+.editor th p, .editor td p {
+  margin: 0;
+  text-indent: 0;
+}
+.editor .selectedCell { background: rgba(194, 65, 12, 0.12); }
+.editor .column-resize-handle {
+  background-color: var(--accent);
+  bottom: -2px; pointer-events: none;
+  position: absolute; right: -2px; top: 0; width: 4px;
+}
+
+/* Images — center, max-width, drop indent */
+.editor img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 1em auto;
+  border-radius: 4px;
+  text-indent: 0;
+}
+.editor figure {
+  margin: 1em auto;
+  text-indent: 0;
+  text-align: center;
+}
+.editor figure img { margin: 0 auto 0.4em; }
+.editor figcaption {
+  font-size: 13px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+/* Links */
+.editor a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.editor a:hover { text-decoration-thickness: 2px; }
+
+/* Alignment via inline-style emitted by TextAlign extension */
+.editor [style*="text-align: center"] { text-indent: 0; }
+.editor [style*="text-align: right"]  { text-indent: 0; }
+.editor [style*="text-align: left"]   { text-indent: 0; }
+
+/* Underline & strike */
+.editor u { text-decoration: underline; text-underline-offset: 2px; }
+.editor s, .editor strike { text-decoration: line-through; }
+
+/* Find / Replace bar */
+.find-bar {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 8px 16px;
+  background: #fffaf0;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.find-bar input[type="text"] {
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font: inherit;
+  font-size: 13px;
+  background: #fff;
+  min-width: 160px;
+}
+.find-bar input[type="text"]:focus {
+  outline: 2px solid var(--accent-soft);
+  border-color: var(--accent);
+}
+.find-bar .tb-btn { width: auto; padding: 0 10px; font-size: 12px; }
+
+/* Toolbar can wrap when many buttons */
+.editor-toolbar { flex-wrap: wrap; row-gap: 6px; }
+
+/* Cmd+F open shortcut binding lives in editor.js; visual hint only here. */

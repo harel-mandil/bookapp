@@ -149,20 +149,49 @@
       <!-- ============ BOOK VIEW ============ -->
       <section class="view" id="view-book">
         <div class="editor-toolbar">
+          <button class="tb-btn" data-cmd="undo" title="Undo (⌘Z)">↶</button>
+          <button class="tb-btn" data-cmd="redo" title="Redo (⌘⇧Z)">↷</button>
+          <span class="tb-sep"></span>
           <button class="tb-btn" data-cmd="bold" title="Bold (⌘B)"><b>B</b></button>
           <button class="tb-btn" data-cmd="italic" title="Italic (⌘I)"><i>I</i></button>
+          <button class="tb-btn" data-cmd="underline" title="Underline (⌘U)"><u>U</u></button>
+          <button class="tb-btn" data-cmd="strike" title="Strikethrough"><s>S</s></button>
           <span class="tb-sep"></span>
           <button class="tb-btn" data-cmd="h1" title="Chapter title">H1</button>
           <button class="tb-btn" data-cmd="h2" title="Section heading">H2</button>
-          <button class="tb-btn" data-cmd="blockquote" title="Blockquote">❝</button>
           <button class="tb-btn" data-cmd="paragraph" title="Paragraph">¶</button>
+          <button class="tb-btn" data-cmd="blockquote" title="Blockquote">❝</button>
           <span class="tb-sep"></span>
+          <button class="tb-btn" data-cmd="bulletList" title="Bullet list">•≡</button>
+          <button class="tb-btn" data-cmd="orderedList" title="Numbered list">1≡</button>
+          <span class="tb-sep"></span>
+          <button class="tb-btn" data-cmd="align-left" title="Align left">⎝≡</button>
+          <button class="tb-btn" data-cmd="align-center" title="Center">≡</button>
+          <button class="tb-btn" data-cmd="align-right" title="Align right">≡⎠</button>
+          <button class="tb-btn" data-cmd="align-justify" title="Justify">☰</button>
+          <span class="tb-sep"></span>
+          <button class="tb-btn" data-cmd="link" title="Link">🔗</button>
+          <button class="tb-btn" data-cmd="image" title="Image">🖼</button>
+          <button class="tb-btn" data-cmd="table" title="Insert 3×3 table">⊞</button>
           <button class="tb-btn" data-cmd="scenebreak" title="Scene break">⁂</button>
+          <span class="tb-sep"></span>
+          <button class="tb-btn" data-cmd="find" title="Find / Replace (⌘F)">🔍</button>
           <span class="tb-spacer"></span>
           <span class="word-count">
             <span id="chapter-word-count">0</span> words ·
             <span id="chapter-reading-time">0 min</span>
           </span>
+        </div>
+
+        <!-- Find / Replace bar (hidden by default) -->
+        <div class="find-bar" id="find-bar" hidden>
+          <input type="text" name="q" placeholder="Find…" />
+          <input type="text" name="r" placeholder="Replace with…" />
+          <button class="tb-btn" data-find="prev" title="Previous">↑</button>
+          <button class="tb-btn" data-find="next" title="Next">↓</button>
+          <button class="tb-btn" data-find="replace" title="Replace one">Replace</button>
+          <button class="tb-btn" data-find="replace-all" title="Replace all">Replace all</button>
+          <button class="tb-btn" data-find="close" title="Close">×</button>
         </div>
 
         <div class="book-page-wrap">
@@ -176,7 +205,6 @@
               <div
                 class="editor"
                 id="editor"
-                contenteditable="true"
                 spellcheck="true"
                 data-placeholder="Begin your chapter here…"
               ></div>

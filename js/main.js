@@ -53,8 +53,23 @@ async function boot() {
   state.prevTotalWords = totalStats(doc.chapters || []).words;
   state.activeChapterId = doc.chapters[0]?.id || null;
 
-  // Mount editor
-  mountEditor({
+  // ── Migration safety: first time we boot the TipTap editor on a doc that
+  // pre-dates it, auto-publish a 'Pre-TipTap-migration' version so the user
+  // can always roll back. Idempotent — only fires once per book.
+  const editorEngine = await db.metaGet('editorEngine', null);
+  if (editorEngine !== 'tiptap' && doc.chapters?.some(c => c.html?.trim())) {
+    try {
+      // Lazy import to avoid pulling export.js if there's nothing to publish.
+      const { publishCurrentVersion } = await import('./publish.js');
+      await publishCurrentVersion('Pre-TipTap-migration', doc, { auth });
+    } catch (e) {
+      console.warn('migration safety publish failed (continuing)', e);
+    }
+  }
+  await db.metaSet('editorEngine', 'tiptap');
+
+  // Mount editor (TipTap loads from CDN — this is async)
+  await mountEditor({
     editorEl: document.getElementById('editor'),
     titleEl: document.getElementById('chapter-title-input'),
     toolbarEl: document.querySelector('.editor-toolbar'),
@@ -201,6 +216,16 @@ async function boot() {
   window.addEventListener('nav:chapter', (e) => {
     setActiveChapter(e.detail.chapterId);
     setActiveView('book');
+  });
+
+  // ⌘F / Ctrl+F — open the editor's find bar when the book view is active.
+  window.addEventListener('keydown', (e) => {
+    const isFind = (e.key === 'f' || e.key === 'F') && (e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey;
+    if (!isFind) return;
+    if (state.activeView !== 'book') return;
+    e.preventDefault();
+    const findBtn = document.querySelector('.tb-btn[data-cmd="find"]');
+    findBtn?.click();
   });
 }
 
