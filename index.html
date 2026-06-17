@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BookApp — Your Writing Studio</title>
+  <link rel="stylesheet" href="styles/app.css" />
+  <link rel="stylesheet" href="styles/editor.css" />
+  <link rel="stylesheet" href="styles/dashboard.css" />
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+</head>
+<body>
+  <div id="app">
+    <!-- ============ SIDEBAR ============ -->
+    <aside id="sidebar">
+      <div class="sidebar-header">
+        <h1 class="brand">📖 BookApp</h1>
+        <div class="book-title" id="book-title-display">Untitled Book</div>
+      </div>
+
+      <nav class="nav">
+        <button class="nav-item active" data-view="dashboard">
+          <span class="nav-icon">📊</span> Dashboard
+        </button>
+        <button class="nav-item" data-view="book">
+          <span class="nav-icon">📖</span> The Book
+        </button>
+        <button class="nav-item" data-view="journey">
+          <span class="nav-icon">🛤️</span> Journey
+        </button>
+        <button class="nav-item" data-view="ideas">
+          <span class="nav-icon">💡</span> Ideas
+        </button>
+        <button class="nav-item" data-view="history">
+          <span class="nav-icon">🕐</span> History
+        </button>
+        <button class="nav-item" data-view="settings">
+          <span class="nav-icon">⚙️</span> Settings
+        </button>
+      </nav>
+
+      <!-- Chapters list (visible in book view) -->
+      <div class="sidebar-section" id="chapters-section">
+        <div class="section-title">
+          Chapters
+          <button class="icon-btn" id="add-chapter-btn" title="Add chapter">+</button>
+        </div>
+        <ul class="chapters-list" id="chapters-list"></ul>
+      </div>
+
+      <div class="sidebar-footer">
+        <div class="sync-status" id="sync-status">
+          <span class="sync-dot" id="sync-dot"></span>
+          <span id="sync-text">Local only</span>
+        </div>
+        <button class="btn-link" id="diagnostics-btn">Diagnostics</button>
+      </div>
+    </aside>
+
+    <!-- ============ MAIN ============ -->
+    <main id="main">
+      <!-- Top bar -->
+      <header id="topbar">
+        <div class="topbar-left">
+          <span id="view-title">Dashboard</span>
+        </div>
+        <div class="topbar-right">
+          <span class="save-indicator" id="save-indicator" title="Last save status">
+            <span id="save-text">Ready</span>
+          </span>
+          <button class="btn" id="connect-drive-btn">Connect Google Drive</button>
+        </div>
+      </header>
+
+      <!-- ============ DASHBOARD VIEW ============ -->
+      <section class="view active" id="view-dashboard">
+        <div class="dashboard">
+          <h2 class="view-heading">Book Dashboard</h2>
+
+          <div class="hero-card">
+            <div class="hero-number" id="total-words">0</div>
+            <div class="hero-label">total words</div>
+            <div class="hero-meta">
+              <span><strong id="today-words">0</strong> today</span>
+              <span>·</span>
+              <span><strong id="reading-time">0 min</strong> read</span>
+              <span>·</span>
+              <span><strong id="page-estimate">0</strong> pages</span>
+            </div>
+          </div>
+
+          <div class="stats-grid">
+            <div class="stat-card">
+              <div class="stat-label">Daily goal</div>
+              <div class="stat-value"><span id="daily-progress">0</span> / <span id="daily-goal">500</span></div>
+              <div class="progress-bar">
+                <div class="progress-fill" id="daily-progress-fill"></div>
+              </div>
+              <button class="btn-link" id="edit-goal-btn">Edit goal</button>
+            </div>
+
+            <div class="stat-card">
+              <div class="stat-label">Streak</div>
+              <div class="stat-value"><span id="streak-days">0</span> days</div>
+              <div class="stat-sub">Calendar days with ≥50 words</div>
+            </div>
+
+            <div class="stat-card">
+              <div class="stat-label">Chapters</div>
+              <div class="stat-value"><span id="chapter-count">0</span></div>
+              <div class="stat-sub">
+                <span id="chapter-done">0</span> done ·
+                <span id="chapter-drafting">0</span> drafting ·
+                <span id="chapter-outlined">0</span> outlined
+              </div>
+            </div>
+
+            <div class="stat-card">
+              <div class="stat-label">Last session</div>
+              <div class="stat-value"><span id="session-words">0</span> words</div>
+              <div class="stat-sub" id="session-time">—</div>
+            </div>
+          </div>
+
+          <div class="chapters-overview">
+            <h3>Chapters</h3>
+            <table class="chapters-table" id="chapters-table">
+              <thead>
+                <tr><th>#</th><th>Title</th><th>Words</th><th>Status</th><th>Reading</th></tr>
+              </thead>
+              <tbody id="chapters-table-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ BOOK VIEW ============ -->
+      <section class="view" id="view-book">
+        <div class="editor-toolbar">
+          <button class="tb-btn" data-cmd="bold" title="Bold (⌘B)"><b>B</b></button>
+          <button class="tb-btn" data-cmd="italic" title="Italic (⌘I)"><i>I</i></button>
+          <span class="tb-sep"></span>
+          <button class="tb-btn" data-cmd="h1" title="Chapter title">H1</button>
+          <button class="tb-btn" data-cmd="h2" title="Section heading">H2</button>
+          <button class="tb-btn" data-cmd="blockquote" title="Blockquote">❝</button>
+          <button class="tb-btn" data-cmd="paragraph" title="Paragraph">¶</button>
+          <span class="tb-sep"></span>
+          <button class="tb-btn" data-cmd="scenebreak" title="Scene break">⁂</button>
+          <span class="tb-spacer"></span>
+          <span class="word-count">
+            <span id="chapter-word-count">0</span> words ·
+            <span id="chapter-reading-time">0 min</span>
+          </span>
+        </div>
+
+        <div class="book-page-wrap">
+          <div class="book-page" id="book-page">
+            <div class="page-header">
+              <span class="header-book-title" id="page-header-book"></span>
+              <span class="header-chapter-title" id="page-header-chapter"></span>
+            </div>
+            <div class="page-body">
+              <input type="text" class="chapter-title-input" id="chapter-title-input" placeholder="Chapter title…" />
+              <div
+                class="editor"
+                id="editor"
+                contenteditable="true"
+                spellcheck="true"
+                data-placeholder="Begin your chapter here…"
+              ></div>
+            </div>
+            <div class="page-footer">
+              <span class="page-number" id="page-number">— 1 —</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ JOURNEY VIEW ============ -->
+      <section class="view" id="view-journey">
+        <div class="journey">
+          <h2 class="view-heading">Writing Journey</h2>
+          <p class="view-sub">Milestones, sessions, and re-entry moments. Auto-logged.</p>
+          <div class="timeline" id="journey-timeline">
+            <div class="empty-state">No milestones yet. Start writing — events log automatically.</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ IDEAS VIEW ============ -->
+      <section class="view" id="view-ideas">
+        <div class="ideas">
+          <h2 class="view-heading">Ideas & Notes</h2>
+          <p class="view-sub">Quick captures. Drag into chapters when ready.</p>
+          <div class="idea-input-row">
+            <input type="text" id="idea-input" placeholder="New idea…" />
+            <button class="btn" id="add-idea-btn">Add</button>
+          </div>
+          <ul class="ideas-list" id="ideas-list"></ul>
+        </div>
+      </section>
+
+      <!-- ============ HISTORY VIEW ============ -->
+      <section class="view" id="view-history">
+        <div class="history">
+          <h2 class="view-heading">Version History</h2>
+          <p class="view-sub">
+            Every meaningful change is snapshotted. Restoring creates a new version —
+            you can always undo.
+          </p>
+          <ul class="history-list" id="history-list">
+            <li class="empty-state">No versions yet.</li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- ============ SETTINGS VIEW ============ -->
+      <section class="view" id="view-settings">
+        <div class="settings">
+          <h2 class="view-heading">Settings</h2>
+
+          <div class="setting-block">
+            <h3>Book</h3>
+            <label>Book title
+              <input type="text" id="setting-book-title" />
+            </label>
+            <label>Daily word goal
+              <input type="number" id="setting-daily-goal" min="0" step="50" />
+            </label>
+            <label>Total word target (optional)
+              <input type="number" id="setting-total-target" min="0" step="1000" placeholder="e.g. 60000" />
+            </label>
+            <label>Deadline (optional)
+              <input type="date" id="setting-deadline" />
+            </label>
+          </div>
+
+          <div class="setting-block">
+            <h3>Google Drive</h3>
+            <label>OAuth Client ID
+              <input type="text" id="setting-client-id" placeholder="xxxxx.apps.googleusercontent.com" />
+              <small>From Google Cloud Console. See <a href="SETUP.md" target="_blank">SETUP.md</a>.</small>
+            </label>
+            <button class="btn" id="save-client-id-btn">Save Client ID</button>
+            <div class="drive-status" id="drive-status-detail"></div>
+          </div>
+
+          <div class="setting-block">
+            <h3>Storage</h3>
+            <div id="storage-info">—</div>
+            <button class="btn-link" id="export-json-btn">Export book as JSON</button>
+            <button class="btn-link" id="import-json-btn">Import JSON…</button>
+            <input type="file" id="import-file-input" accept=".json" hidden />
+          </div>
+
+          <div class="setting-block danger">
+            <h3>Danger zone</h3>
+            <button class="btn-danger" id="reset-app-btn">Reset everything (local only)</button>
+            <small>Deletes local cache. Drive copies are NOT touched.</small>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- ============ DIAGNOSTICS PANEL ============ -->
+  <div id="diag-overlay" class="overlay" hidden>
+    <div class="diag-panel">
+      <header>
+        <h3>Diagnostics</h3>
+        <button class="icon-btn" id="diag-close">×</button>
+      </header>
+      <pre id="diag-content"></pre>
+      <footer>
+        <button class="btn" id="diag-copy">Copy to clipboard</button>
+      </footer>
+    </div>
+  </div>
+
+  <!-- ============ TOAST ============ -->
+  <div id="toast" hidden></div>
+
+  <!-- App scripts (ES modules, load order matters via imports) -->
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

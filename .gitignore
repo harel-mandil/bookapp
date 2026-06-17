@@ -1,0 +1,15 @@
+# Local junk
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Claude Code internals
+.claude/
+
+# Tasks/output that aren't part of the app
+*.output
