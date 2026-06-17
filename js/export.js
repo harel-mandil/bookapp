@@ -22,87 +22,240 @@ async function loadDocx() {
 
 // ============ HTML → docx PARAGRAPHS ============
 
+/** Map a CSS text-align value to a docx AlignmentType, or null if none. */
+function pickAlignment(node, D) {
+  const align = (node.style?.textAlign || '').toLowerCase();
+  if (align === 'center')  return D.AlignmentType.CENTER;
+  if (align === 'right')   return D.AlignmentType.RIGHT;
+  if (align === 'justify') return D.AlignmentType.JUSTIFIED;
+  if (align === 'left')    return D.AlignmentType.LEFT;
+  return null;
+}
+
+/** Convert a base64 data: URL to a Uint8Array (for ImageRun). null on failure. */
+function dataUrlToBytes(dataUrl) {
+  const m = /^data:image\/[a-z+]+;base64,(.+)$/i.exec(dataUrl || '');
+  if (!m) return null;
+  try {
+    const bin = atob(m[1]);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return bytes;
+  } catch {
+    return null;
+  }
+}
+
+/** Build a docx ImageRun for an <img> element, or null if unsupported. */
+function imageRunFor(imgEl, D) {
+  const src = imgEl.getAttribute('src') || '';
+  if (src.startsWith('data:')) {
+    const bytes = dataUrlToBytes(src);
+    if (!bytes) return null;
+    // Constrain on-page width — actual aspect ratio preserved on Word's side
+    // since we don't have natural dimensions in a static parse.
+    const width = parseInt(imgEl.getAttribute('width'), 10) || 480;
+    const height = parseInt(imgEl.getAttribute('height'), 10) || Math.round(width * 0.66);
+    return new D.ImageRun({
+      data: bytes,
+      transformation: { width, height },
+    });
+  }
+  // External http(s) image — docx-js can't fetch in browser without CORS, so
+  // we drop with a plain-text fallback so the chapter still flows.
+  return null;
+}
+
+/** Recursively flatten a list (UL/OL) into Paragraphs with bullet/number formatting. */
+function flattenList(listEl, D, depth = 0) {
+  const { Paragraph, TextRun } = D;
+  const ordered = listEl.tagName === 'OL';
+  const out = [];
+  for (const li of listEl.children) {
+    if (li.tagName !== 'LI') continue;
+    // Build a paragraph from any non-list children of this <li>; nested lists recurse.
+    const inlineRuns = [];
+    const trailing = [];
+    for (const child of li.childNodes) {
+      if (child.nodeType === 1 && (child.tagName === 'UL' || child.tagName === 'OL')) {
+        trailing.push(...flattenList(child, D, depth + 1));
+      } else {
+        const runs = childToRuns(child, D, {});
+        inlineRuns.push(...runs);
+      }
+    }
+    if (!inlineRuns.length) inlineRuns.push(new TextRun(''));
+    out.push(new Paragraph({
+      children: inlineRuns,
+      bullet: ordered ? undefined : { level: depth },
+      numbering: ordered ? { reference: 'bookapp-numbered', level: depth } : undefined,
+      indent: { left: 720 + depth * 360 },
+    }));
+    out.push(...trailing);
+  }
+  return out;
+}
+
+/** Build a docx Table from a <table> element. */
+function tableFromHtml(tableEl, D) {
+  const { Table, TableRow, TableCell, Paragraph, WidthType } = D;
+  const rows = [];
+  // Collect every TR regardless of whether it's in THEAD/TBODY.
+  const trs = tableEl.querySelectorAll('tr');
+  for (const tr of trs) {
+    const cells = [];
+    for (const td of tr.children) {
+      if (td.tagName !== 'TD' && td.tagName !== 'TH') continue;
+      const cellChildren = htmlBlocksToDocxParagraphs(td.innerHTML, D);
+      cells.push(new TableCell({
+        children: cellChildren.length ? cellChildren : [new Paragraph('')],
+        columnSpan: parseInt(td.getAttribute('colspan'), 10) || 1,
+        rowSpan: parseInt(td.getAttribute('rowspan'), 10) || 1,
+      }));
+    }
+    if (cells.length) rows.push(new TableRow({ children: cells }));
+  }
+  if (!rows.length) return null;
+  return new Table({
+    rows,
+    width: { size: 100, type: WidthType.PERCENTAGE },
+  });
+}
+
+/** Walk a child node and return an array of docx TextRuns / images / link runs. */
+function childToRuns(node, D, fmt) {
+  const { TextRun, ExternalHyperlink } = D;
+  const out = [];
+  if (node.nodeType === 3) {
+    if (node.nodeValue) out.push(new TextRun({ text: node.nodeValue, ...fmt }));
+    return out;
+  }
+  if (node.nodeType !== 1) return out;
+  const t = node.tagName;
+  if (t === 'BR') { out.push(new TextRun({ text: '', break: 1 })); return out; }
+  if (t === 'IMG') {
+    const img = imageRunFor(node, D);
+    if (img) out.push(img);
+    else if (node.getAttribute('alt')) out.push(new TextRun({ text: `[image: ${node.getAttribute('alt')}]`, italics: true, ...fmt }));
+    return out;
+  }
+  if (t === 'A') {
+    const href = node.getAttribute('href') || '';
+    const innerRuns = [];
+    for (const c of node.childNodes) innerRuns.push(...childToRuns(c, D, fmt));
+    out.push(new ExternalHyperlink({ link: href, children: innerRuns.length ? innerRuns : [new TextRun({ text: node.textContent, ...fmt })] }));
+    return out;
+  }
+  const next = { ...fmt };
+  if (t === 'STRONG' || t === 'B') next.bold = true;
+  if (t === 'EM' || t === 'I') next.italics = true;
+  if (t === 'U') next.underline = {};
+  if (t === 'S' || t === 'STRIKE') next.strike = true;
+  for (const c of node.childNodes) out.push(...childToRuns(c, D, next));
+  return out;
+}
+
 /**
- * Convert sanitized chapter HTML into an array of docx Paragraph objects.
- * Handles the Phase 2 allow-list: P, H1, H2, BLOCKQUOTE, STRONG/B, EM/I, BR.
- * Phase 4 will extend this to lists, tables, images, alignment.
+ * Convert sanitized chapter HTML into an array of docx block-level items
+ * (Paragraphs and Tables). Handles the full Phase 4 allow-list:
+ * P, H1, H2, H3, BLOCKQUOTE, UL/OL/LI, TABLE, FIGURE, IMG (as block when standalone).
  */
 function htmlBlocksToDocxParagraphs(html, D) {
-  const { Paragraph, TextRun, HeadingLevel, AlignmentType } = D;
+  const { Paragraph, TextRun, HeadingLevel } = D;
 
   const tpl = document.createElement('template');
   tpl.innerHTML = html || '';
   const out = [];
 
   for (const node of tpl.content.childNodes) {
-    if (node.nodeType !== 1) continue;          // skip text/comment at root
+    if (node.nodeType !== 1) continue;
     const tag = node.tagName;
 
     if (tag === 'P' && node.classList.contains('scene-break')) {
       out.push(new Paragraph({
-        alignment: AlignmentType.CENTER,
+        alignment: D.AlignmentType.CENTER,
         spacing: { before: 240, after: 240 },
         children: [new TextRun('* * *')],
       }));
       continue;
     }
 
-    if (tag === 'H1') {
+    if (tag === 'H1' || tag === 'H2' || tag === 'H3') {
+      const level = tag === 'H1' ? HeadingLevel.HEADING_1
+                  : tag === 'H2' ? HeadingLevel.HEADING_2
+                  : HeadingLevel.HEADING_3;
       out.push(new Paragraph({
-        heading: HeadingLevel.HEADING_1,
-        children: collectRuns(node, D),
+        heading: level,
+        alignment: pickAlignment(node, D) || undefined,
+        children: childrenToRuns(node, D),
       }));
-    } else if (tag === 'H2') {
-      out.push(new Paragraph({
-        heading: HeadingLevel.HEADING_2,
-        children: collectRuns(node, D),
-      }));
-    } else if (tag === 'BLOCKQUOTE') {
+      continue;
+    }
+
+    if (tag === 'BLOCKQUOTE') {
       out.push(new Paragraph({
         style: 'Quote',
-        indent: { left: 720 },                  // ½"
-        children: collectRuns(node, D),
+        indent: { left: 720 },
+        alignment: pickAlignment(node, D) || undefined,
+        children: childrenToRuns(node, D),
       }));
-    } else if (tag === 'P' || tag === 'DIV') {
-      out.push(new Paragraph({ children: collectRuns(node, D) }));
-    } else {
-      // Unknown block — fall through as a plain paragraph.
-      out.push(new Paragraph({ children: collectRuns(node, D) }));
+      continue;
     }
+
+    if (tag === 'UL' || tag === 'OL') {
+      out.push(...flattenList(node, D, 0));
+      continue;
+    }
+
+    if (tag === 'TABLE') {
+      const t = tableFromHtml(node, D);
+      if (t) {
+        out.push(t);
+        // Drop a tiny spacer paragraph after the table (docx requires).
+        out.push(new Paragraph({ children: [new TextRun('')] }));
+      }
+      continue;
+    }
+
+    if (tag === 'FIGURE') {
+      // figcaption + img — emit the image plus an italic caption Paragraph.
+      const img = node.querySelector('img');
+      if (img) {
+        const ir = imageRunFor(img, D);
+        if (ir) out.push(new Paragraph({ alignment: D.AlignmentType.CENTER, children: [ir] }));
+      }
+      const cap = node.querySelector('figcaption');
+      if (cap?.textContent) {
+        out.push(new Paragraph({
+          alignment: D.AlignmentType.CENTER,
+          children: [new TextRun({ text: cap.textContent, italics: true, size: 18 })],
+        }));
+      }
+      continue;
+    }
+
+    if (tag === 'IMG') {
+      const ir = imageRunFor(node, D);
+      if (ir) out.push(new Paragraph({ alignment: D.AlignmentType.CENTER, children: [ir] }));
+      continue;
+    }
+
+    // P, DIV, anything else block-ish — treat as a paragraph.
+    out.push(new Paragraph({
+      alignment: pickAlignment(node, D) || undefined,
+      children: childrenToRuns(node, D),
+    }));
   }
 
-  // docx requires at least one paragraph per section.
   if (!out.length) out.push(new Paragraph({ children: [new TextRun('')] }));
   return out;
 }
 
-/** Walk an element's children and emit TextRuns honoring nested <strong>/<em>. */
-function collectRuns(el, D) {
-  const { TextRun } = D;
+/** Walk an element's children and emit runs/images/links honoring nested marks. */
+function childrenToRuns(el, D) {
   const runs = [];
-
-  function walk(node, fmt) {
-    if (node.nodeType === 3) {                  // text
-      const text = node.nodeValue;
-      if (text) runs.push(new TextRun({ text, ...fmt }));
-      return;
-    }
-    if (node.nodeType !== 1) return;
-    const t = node.tagName;
-    if (t === 'BR') {
-      runs.push(new TextRun({ text: '', break: 1 }));
-      return;
-    }
-    const next = { ...fmt };
-    if (t === 'STRONG' || t === 'B') next.bold = true;
-    if (t === 'EM' || t === 'I') next.italics = true;
-    if (t === 'U') next.underline = {};
-    if (t === 'S' || t === 'STRIKE') next.strike = true;
-    for (const child of node.childNodes) walk(child, next);
-  }
-
-  for (const child of el.childNodes) walk(child, {});
-  if (!runs.length) runs.push(new TextRun(''));
+  for (const child of el.childNodes) runs.push(...childToRuns(child, D, {}));
+  if (!runs.length) runs.push(new D.TextRun(''));
   return runs;
 }
 
@@ -202,6 +355,18 @@ export async function htmlToDocxBlob(doc, opts = {}) {
           quickFormat: true,
           run: { italics: true, color: '666666' },
           paragraph: { indent: { left: 720, right: 720 }, spacing: { before: 240, after: 240 } },
+        },
+      ],
+    },
+    numbering: {
+      config: [
+        {
+          reference: 'bookapp-numbered',
+          levels: [
+            { level: 0, format: 'decimal',     text: '%1.', alignment: D.AlignmentType.START },
+            { level: 1, format: 'lowerLetter', text: '%2.', alignment: D.AlignmentType.START },
+            { level: 2, format: 'lowerRoman',  text: '%3.', alignment: D.AlignmentType.START },
+          ],
         },
       ],
     },

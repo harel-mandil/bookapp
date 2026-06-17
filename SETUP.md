@@ -114,3 +114,93 @@ Your **Mac dying** would lose: the app code (rebuildable in minutes), version hi
 **"Storage info unavailable"** — Some browsers (older Safari) don't expose `navigator.storage.estimate()`. The app still works; you just can't see usage stats.
 
 **Resetting** — **Settings → Reset everything (local only)**. This wipes the local cache. Drive copies are untouched; reconnect after reset and your book reloads.
+
+---
+
+## Exporting your book
+
+In the top right of the app, click **⬇ Export**:
+
+| Option | What it does |
+|---|---|
+| 📄 **Entire book (.docx)** | Builds a Word document with title page, table of contents, and every chapter on its own page. Downloads to your Mac. |
+| 📄 **Current chapter (.docx)** | Just the chapter you're viewing. Useful for sharing one chapter with an editor. |
+| 🖨️ **Print / PDF** | Opens a clean print-formatted view in a new tab and triggers your browser's print dialog. Pick "Save as PDF" to download. |
+| `{ }` **JSON backup** | Raw structured data — useful if you ever want to migrate your book to another tool or restore from a downloaded backup via Settings → Import JSON. |
+
+**`.docx` mirror in Drive (optional):** Settings → Storage → check **"Mirror book.docx to Drive"**. Once enabled, every change syncs both `book.json` AND a continuously-updated `book.docx` file to your `BookApp` Drive folder. The mirror lags ~30 seconds behind the live file (intentional — see [KNOWN_ISSUES.md](KNOWN_ISSUES.md)).
+
+---
+
+## Importing a `.docx`
+
+You can bring an existing Word document into the app **without losing any current chapters**.
+
+### From Settings → Import .docx
+Opens a modal with three options:
+
+1. **Add as one chapter** — the whole `.docx` becomes a single new chapter, appended to the end.
+2. **Split by H1 into multiple chapters** — every Word "Heading 1" in the file starts a new chapter; each chapter's title is the H1's text.
+3. **Replace entire book** — wipes current chapters and replaces with the file. *Requires double-confirmation.*
+
+**No matter which option you pick, a safety version (`Pre-import: <filename>`) is automatically published BEFORE any change.** It appears in History with a `PUBLISHED` badge and is mirrored to Drive's `versions/` folder. You can always restore from it if anything goes wrong.
+
+### From the chapter list
+Click the **📄+** icon next to the **+** in the sidebar's Chapters section, OR **drag a `.docx` file onto the chapter list** — both add the file as one new chapter (no modal, no replace risk).
+
+### What gets imported
+- ✅ Headings (H1, H2, H3)
+- ✅ Paragraphs with bold / italic / underline
+- ✅ Bullet & numbered lists
+- ✅ Blockquotes
+- ❌ Footnotes, comments, tracked changes (stripped — see [KNOWN_ISSUES.md](KNOWN_ISSUES.md))
+- ❌ Images (TODO — planned upgrade)
+- ❌ Tables (kept as plain text for now)
+
+If the importer drops anything, you'll see a yellow toast: **"X feature(s) from Word were not imported."**
+
+---
+
+## Publishing versions
+
+A "published version" is a frozen, named copy of your book. Unlike auto-saves (which get pruned over time), published versions live forever in IndexedDB AND in Drive's `BookApp/versions/` folder as paired `.json` and `.docx` files.
+
+**To publish:**
+1. Click **⭐ Publish** in the top right
+2. Type a name — e.g. `Draft 1 — sent to editor` or `Before chapter 5 rewrite`
+3. Click **Publish**
+
+The version appears in **History** with a `PUBLISHED` badge and your label. From Drive's perspective, you'll see two new files in `BookApp/versions/`:
+
+```
+2026-06-17T14-30_draft-1-sent-to-editor.json
+2026-06-17T14-30_draft-1-sent-to-editor.docx
+```
+
+**To filter History to just published versions:** click the **Published** pill at the top of the History view.
+
+**To restore:** click **Restore** on any version (auto OR published) — the app saves your current state first as a safety snapshot, then loads the older one.
+
+---
+
+## Drive folder layout
+
+After everything is set up, your Google Drive will have:
+
+```
+BookApp/
+  book.json                                    # live working file (4-30 sec lag)
+  book.docx                                    # mirror, optional, ~30 sec lag
+  versions/
+    2026-06-17T14-22_draft-1.json              # a published version
+    2026-06-17T14-22_draft-1.docx
+    2026-06-20T09-15_pre-import-novel-doc.json # auto-saved before .docx import
+    2026-06-20T09-15_pre-import-novel-doc.docx
+    ...
+```
+
+**Don't manually edit these files.** The app uses `drive.file` scope, which means:
+- ✅ It can only see files it created (your other Drive files are private to it)
+- ⚠️ If you delete one of these files manually from Drive's web UI, the app can't see that — it'll silently create a duplicate next time it saves.
+
+If you need to start fresh, use **Settings → Reset everything (local only)**. That clears the local cache and forces the app to re-fetch from Drive cleanly.
