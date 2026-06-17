@@ -10,7 +10,10 @@
 // ============================================================
 
 const DB_NAME = 'bookapp';
-const DB_VERSION = 1;
+// v2 (2026-06): added `kind` and `label` fields to snapshots so the user can
+// distinguish auto-saved versions from named "Published" ones. Migration in
+// onupgradeneeded backfills `kind: 'auto'` on every existing snapshot.
+const DB_VERSION = 2;
 
 let dbPromise = null;
 
@@ -20,8 +23,20 @@ function open() {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onerror = () => reject(req.error);
     req.onsuccess = () => resolve(req.result);
+    // Two tabs / windows on the same origin will block this upgrade.
+    // Surface that clearly so the user knows what to do.
+    req.onblocked = () => {
+      try {
+        // Dynamic import keeps utils.js out of the cold-path require graph.
+        import('./utils.js').then(({ toast }) => {
+          toast('Please close other BookApp tabs and reload — database upgrade pending.', 'warning', 6000);
+        }).catch(() => {});
+      } catch {}
+    };
     req.onupgradeneeded = (e) => {
       const db = req.result;
+      const oldVersion = e.oldVersion;
+
       if (!db.objectStoreNames.contains('meta')) {
         db.createObjectStore('meta', { keyPath: 'key' });
       }
@@ -42,6 +57,23 @@ function open() {
       if (!db.objectStoreNames.contains('ideas')) {
         const s = db.createObjectStore('ideas', { keyPath: 'id' });
         s.createIndex('byTimestamp', 'createdAt');
+      }
+
+      // v1 → v2: backfill `kind: 'auto'` on every existing snapshot.
+      // Use the upgrade transaction (req.transaction) — opening a new tx
+      // here would deadlock.
+      if (oldVersion < 2 && db.objectStoreNames.contains('snapshots')) {
+        const store = req.transaction.objectStore('snapshots');
+        const cursorReq = store.openCursor();
+        cursorReq.onsuccess = (ev) => {
+          const cursor = ev.target.result;
+          if (!cursor) return;
+          const row = cursor.value;
+          if (row && row.kind == null) {
+            cursor.update({ ...row, kind: 'auto', label: row.label ?? null });
+          }
+          cursor.continue();
+        };
       }
     };
   });
@@ -115,6 +147,12 @@ export async function snapshotGet(id) {
 export async function snapshotDelete(id) {
   const { store } = await tx('snapshots', 'readwrite');
   return asPromise(store.delete(id));
+}
+
+/** Filter snapshots by `kind` ('auto' | 'published'). Defaults to 'auto' for legacy rows. */
+export async function snapshotsByKind(kind) {
+  const all = await snapshotsAll();
+  return all.filter(s => (s.kind ?? 'auto') === kind);
 }
 
 // ============ JOURNEY ============

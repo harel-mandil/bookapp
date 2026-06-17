@@ -13,12 +13,16 @@ import { debounce, fmtTime } from './utils.js';
 
 const FOLDER_NAME = 'BookApp';
 const BOOK_FILE_NAME = 'book.json';
+export const BOOK_DOCX_NAME = 'book.docx';
+export const VERSIONS_FOLDER_NAME = 'versions';
 
 const DRIVE_PUSH_DEBOUNCE_MS = 4000;
 const DRIVE_PUSH_MAX_WAIT_MS = 30000;
 
 let bookFolderId = null;
 let bookFileId = null;
+let bookDocxFileId = null;
+let versionsFolderId = null;
 let lastSyncAt = 0;
 let lastDriveModifiedTime = null;
 let pendingDoc = null;
@@ -34,9 +38,51 @@ export function onSyncStatus(cb) { onStatus = cb; }
 export async function initSync() {
   bookFolderId = await db.metaGet('driveFolderId');
   bookFileId = await db.metaGet('driveBookFileId');
+  bookDocxFileId = await db.metaGet('driveBookDocxFileId');
+  versionsFolderId = await db.metaGet('driveVersionsFolderId');
   lastSyncAt = await db.metaGet('lastSyncAt', 0);
   lastDriveModifiedTime = await db.metaGet('lastDriveModifiedTime', null);
   emit(auth.isAuthorized() ? 'synced' : 'local');
+}
+
+/** Lazy: ensure the BookApp/ folder exists; cache id in meta. Returns id. */
+export async function ensureBookFolder() {
+  if (bookFolderId) return bookFolderId;
+  bookFolderId = await drive.findOrCreateFolder(FOLDER_NAME);
+  await db.metaSet('driveFolderId', bookFolderId);
+  return bookFolderId;
+}
+
+/** Lazy: ensure BookApp/versions/ exists. Returns id. */
+export async function ensureVersionsFolder() {
+  if (versionsFolderId) return versionsFolderId;
+  const parent = await ensureBookFolder();
+  versionsFolderId = await drive.findOrCreateFolder(VERSIONS_FOLDER_NAME, parent);
+  await db.metaSet('driveVersionsFolderId', versionsFolderId);
+  return versionsFolderId;
+}
+
+/** Lazy: resolve (don't create) book.docx file id by listing the BookApp folder. */
+export async function ensureDocxMirrorFileId() {
+  if (bookDocxFileId) return bookDocxFileId;
+  const parent = await ensureBookFolder();
+  const existing = await drive.findFileByName(BOOK_DOCX_NAME, parent);
+  if (existing) {
+    bookDocxFileId = existing.id;
+    await db.metaSet('driveBookDocxFileId', bookDocxFileId);
+  }
+  return bookDocxFileId;
+}
+
+/** Set/clear the cached book.docx file id. Used by Phase 2's docx mirror writer. */
+export async function setDocxMirrorFileId(id) {
+  bookDocxFileId = id;
+  if (id) await db.metaSet('driveBookDocxFileId', id);
+}
+
+/** Read-only access to the cached IDs (for Phase 2 publishers). */
+export function getCachedIds() {
+  return { bookFolderId, bookFileId, bookDocxFileId, versionsFolderId };
 }
 
 /**
@@ -46,15 +92,11 @@ export async function initSync() {
 export async function reconcileWithDrive(localDoc, applyRemote) {
   emit('syncing');
   try {
-    if (!bookFolderId) {
-      bookFolderId = await drive.findOrCreateFolder(FOLDER_NAME);
-      await db.metaSet('driveFolderId', bookFolderId);
-    }
+    await ensureBookFolder();
 
     // Find the file id once if we don't have it.
     if (!bookFileId) {
-      const files = await drive.listFiles(bookFolderId);
-      const existing = files.find(f => f.name === BOOK_FILE_NAME);
+      const existing = await drive.findFileByName(BOOK_FILE_NAME, bookFolderId);
       if (existing) {
         bookFileId = existing.id;
         await db.metaSet('driveBookFileId', bookFileId);
@@ -108,10 +150,7 @@ export async function pushNow() {
 
   emit('syncing');
   try {
-    if (!bookFolderId) {
-      bookFolderId = await drive.findOrCreateFolder(FOLDER_NAME);
-      await db.metaSet('driveFolderId', bookFolderId);
-    }
+    await ensureBookFolder();
     const r = await drive.saveFile({
       fileId: bookFileId,
       name: BOOK_FILE_NAME,

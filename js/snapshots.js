@@ -8,6 +8,12 @@
 //   4. explicit user action ("Save Version" button)
 //   5. switching active chapter
 //
+// Snapshot kinds:
+//   - 'auto'      — created by any trigger above. Subject to retention/pruning.
+//   - 'published' — promoted by the user with a name (e.g. "Draft 1 — sent to
+//                   editor"). Never pruned. Mirrored to Drive's versions/
+//                   subfolder in both .json and .docx form.
+//
 // Format: each snapshot is a full JSON copy of the book document.
 // (Diff-based snapshots were considered, but for a single-user app under
 //  ~30 MB total, the simplicity of full copies wins. Retention prunes the
@@ -19,6 +25,7 @@
 //   - keep one per day for last 90 days
 //   - keep monthly forever
 //   - hard cap: 500 entries; oldest non-monthly evicted first
+//   - PUBLISHED snapshots are exempt from every rule above.
 // ============================================================
 
 import * as db from './db.js';
@@ -90,7 +97,7 @@ export async function forceSnapshot(reason = 'manual') {
   return maybeSnapshot(reason, /* force */ true);
 }
 
-async function maybeSnapshot(reason, force = false) {
+async function maybeSnapshot(reason, force = false, opts = {}) {
   const doc = pendingDoc || getDoc?.();
   if (!doc) return null;
 
@@ -107,14 +114,29 @@ async function maybeSnapshot(reason, force = false) {
     doc: JSON.parse(JSON.stringify(doc)), // deep copy
     words: totalsNow.words,
     wordDelta,
+    kind: opts.kind ?? 'auto',
+    label: opts.label ?? null,
   };
 
-  await db.snapshotAdd(snap);
+  const id = await db.snapshotAdd(snap);
+  snap.id = id;
   lastSnapshot = snap.doc;
   lastSnapshotChars = countChars(snap.doc);
   if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
   if (onSnap) onSnap(snap);
   return snap;
+}
+
+/**
+ * Promote the current document to a *published* version.
+ * Published snapshots are exempt from retention pruning.
+ *
+ * @param {string} label  user-supplied name (e.g. "Draft 1 — sent to editor")
+ * @returns {Promise<object>} the snapshot row
+ */
+export async function publishVersion(label) {
+  const cleanLabel = (label || '').trim() || 'Untitled version';
+  return maybeSnapshot('published', /* force */ true, { kind: 'published', label: cleanLabel });
 }
 
 /** Count characters across all chapters (used for magnitude trigger). */
@@ -127,14 +149,17 @@ function countChars(doc) {
 
 async function pruneOldSnapshots() {
   const all = await db.snapshotsAll();
-  if (all.length <= RETENTION_CAP * 0.6) return; // not even close to cap → skip
+
+  // Published snapshots are immortal — separate them out and never touch.
+  const auto = all.filter(s => (s.kind ?? 'auto') !== 'published');
+  if (auto.length <= RETENTION_CAP * 0.6) return; // not even close to cap → skip
 
   const now = Date.now();
   const day = 24 * 60 * 60 * 1000;
   const keep = new Set();
 
-  // Always keep the most recent.
-  if (all.length) keep.add(all[all.length - 1].id);
+  // Always keep the most recent auto snapshot.
+  if (auto.length) keep.add(auto[auto.length - 1].id);
 
   const buckets = {
     raw: new Set(),    // last 24 h: all
@@ -143,7 +168,7 @@ async function pruneOldSnapshots() {
     monthly: new Map(),// month key → snapshot id
   };
 
-  for (const s of all) {
+  for (const s of auto) {
     const age = now - s.timestamp;
     const d = new Date(s.timestamp);
     if (age <= day) {
@@ -165,7 +190,7 @@ async function pruneOldSnapshots() {
   buckets.daily.forEach(id => keep.add(id));
   buckets.monthly.forEach(id => keep.add(id));
 
-  for (const s of all) {
+  for (const s of auto) {
     if (!keep.has(s.id)) await db.snapshotDelete(s.id);
   }
 }

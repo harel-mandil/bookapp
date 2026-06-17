@@ -80,35 +80,39 @@ export async function findOrCreateFolder(name, parentId = null) {
 
 // ============ FILES ============
 
-/** Multipart upload body builder. CRLF-correct. */
-function buildMultipart(boundary, metadata, contentJson) {
-  // Note: with drive.file scope, "metadata" includes name + parents (on create only) + mimeType.
-  return (
+/**
+ * Build a multipart/related body as a Blob so binary payloads survive intact.
+ * String concat would mangle non-UTF-8 bytes (e.g. inside a .docx zip).
+ *
+ * @param {string} boundary
+ * @param {object} metadata  Drive file metadata (name, parents?, mimeType?)
+ * @param {Blob|string} payload  the actual file body
+ * @param {string} payloadType   MIME type of the payload part
+ * @returns {Blob} multipart body
+ */
+function buildMultipartBlob(boundary, metadata, payload, payloadType) {
+  const metaPart =
     `\r\n--${boundary}\r\n` +
     `Content-Type: application/json; charset=UTF-8\r\n\r\n` +
     JSON.stringify(metadata) +
     `\r\n--${boundary}\r\n` +
-    `Content-Type: application/json; charset=UTF-8\r\n\r\n` +
-    contentJson +
-    `\r\n--${boundary}--`
-  );
+    `Content-Type: ${payloadType}\r\n\r\n`;
+  const closing = `\r\n--${boundary}--`;
+  return new Blob([metaPart, payload, closing]);
 }
 
-/**
- * Save file (create if no fileId, otherwise PATCH). content is a JS object;
- * we serialize it as JSON. Returns { id, name, modifiedTime }.
- */
-export async function saveFile({ fileId, name, parentId, content }) {
-  const boundary = '-------bookapp_' + (crypto.randomUUID?.() ?? Math.random().toString(36).slice(2));
-  const meta = fileId
-    ? { name }
-    : { name, parents: parentId ? [parentId] : undefined, mimeType: 'application/json' };
-  const body = buildMultipart(boundary, meta, JSON.stringify(content));
+/** Random multipart boundary. */
+function newBoundary() {
+  return '-------bookapp_' + (crypto.randomUUID?.() ?? Math.random().toString(36).slice(2));
+}
 
+/** Internal: low-level multipart upload (create or PATCH). Returns Drive metadata. */
+async function uploadMultipart({ fileId, metadata, payload, payloadType }) {
+  const boundary = newBoundary();
+  const body = buildMultipartBlob(boundary, metadata, payload, payloadType);
   const url = fileId
     ? `${UPLOAD_BASE}/${encodeURIComponent(fileId)}?uploadType=multipart&fields=id,name,modifiedTime`
     : `${UPLOAD_BASE}?uploadType=multipart&fields=id,name,modifiedTime`;
-
   const r = await driveFetch(url, {
     method: fileId ? 'PATCH' : 'POST',
     headers: { 'Content-Type': `multipart/related; boundary=${boundary}` },
@@ -117,20 +121,64 @@ export async function saveFile({ fileId, name, parentId, content }) {
   return r.json();
 }
 
+/**
+ * Save a JSON file (create if no fileId, otherwise PATCH). content is a JS
+ * object; we serialize it as JSON. Returns { id, name, modifiedTime }.
+ */
+export async function saveFile({ fileId, name, parentId, content }) {
+  const meta = fileId
+    ? { name }
+    : { name, parents: parentId ? [parentId] : undefined, mimeType: 'application/json' };
+  const payload = JSON.stringify(content);
+  return uploadMultipart({ fileId, metadata: meta, payload, payloadType: 'application/json; charset=UTF-8' });
+}
+
+/**
+ * Save an arbitrary binary file (Blob/ArrayBuffer/Uint8Array) — used for
+ * book.docx mirroring and any other non-JSON Drive write.
+ *
+ * @param {object} opts
+ * @param {string} [opts.fileId]  if set, PATCHes that file; else creates new.
+ * @param {string} opts.name      file name (only used on create, but always sent).
+ * @param {string} [opts.parentId] parent folder id (create only).
+ * @param {Blob|ArrayBuffer|Uint8Array} opts.blob
+ * @param {string} opts.mimeType  e.g. 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+ */
+export async function saveBlobFile({ fileId, name, parentId, blob, mimeType }) {
+  const meta = fileId
+    ? { name }
+    : { name, parents: parentId ? [parentId] : undefined, mimeType };
+  // Normalize to Blob so the multipart Blob() constructor handles all branches.
+  const payload = blob instanceof Blob ? blob : new Blob([blob], { type: mimeType });
+  return uploadMultipart({ fileId, metadata: meta, payload, payloadType: mimeType });
+}
+
 /** Download file content as parsed JSON. Throws on parse error. */
 export async function loadFile(fileId) {
   const r = await driveFetch(`${META_BASE}/${encodeURIComponent(fileId)}?alt=media`);
   return r.json();
 }
 
+/** Download file content as a Blob — for binary files (.docx etc). */
+export async function loadBlobFile(fileId) {
+  const r = await driveFetch(`${META_BASE}/${encodeURIComponent(fileId)}?alt=media`);
+  return r.blob();
+}
+
 /** List files in a folder. */
 export async function listFiles(folderId) {
   const q = encodeURIComponent(`'${driveEscape(folderId)}' in parents and trashed=false`);
-  const fields = encodeURIComponent('files(id,name,modifiedTime,size)');
+  const fields = encodeURIComponent('files(id,name,modifiedTime,size,mimeType)');
   const url = `${META_BASE}?q=${q}&fields=${fields}&orderBy=modifiedTime desc&pageSize=200`;
   const r = await driveFetch(url);
   const j = await r.json();
   return j.files || [];
+}
+
+/** Find first non-trashed file with this name in a folder. Null if none. */
+export async function findFileByName(name, parentId) {
+  const files = await listFiles(parentId);
+  return files.find(f => f.name === name) || null;
 }
 
 /** Delete a file. */
@@ -140,7 +188,7 @@ export async function deleteFile(fileId) {
 
 /** Get file metadata (modifiedTime, size, etc.). Useful for conflict detection. */
 export async function fileMeta(fileId) {
-  const fields = encodeURIComponent('id,name,modifiedTime,size');
+  const fields = encodeURIComponent('id,name,modifiedTime,size,mimeType');
   const r = await driveFetch(`${META_BASE}/${encodeURIComponent(fileId)}?fields=${fields}`);
   return r.json();
 }
