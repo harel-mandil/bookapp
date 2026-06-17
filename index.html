@@ -68,6 +68,17 @@
           <span class="save-indicator" id="save-indicator" title="Last save status">
             <span id="save-text">Ready</span>
           </span>
+          <div class="dropdown" id="export-dropdown">
+            <button class="btn btn-ghost" id="export-btn" title="Export your book">⬇ Export</button>
+            <div class="dropdown-menu" id="export-menu" hidden>
+              <button class="dropdown-item" data-export="book-docx">📄 Entire book (.docx)</button>
+              <button class="dropdown-item" data-export="chapter-docx">📄 Current chapter (.docx)</button>
+              <button class="dropdown-item" data-export="print">🖨️ Print / PDF</button>
+              <div class="dropdown-divider"></div>
+              <button class="dropdown-item" data-export="json">{ } JSON backup</button>
+            </div>
+          </div>
+          <button class="btn" id="publish-version-btn" title="Save a named, frozen version">⭐ Publish</button>
           <button class="btn" id="connect-drive-btn">Connect Google Drive</button>
         </div>
       </header>
@@ -248,8 +259,15 @@
           <div class="setting-block">
             <h3>Storage</h3>
             <div id="storage-info">—</div>
-            <button class="btn-link" id="export-json-btn">Export book as JSON</button>
-            <button class="btn-link" id="import-json-btn">Import JSON…</button>
+            <label class="checkbox-label">
+              <input type="checkbox" id="setting-mirror-docx" />
+              Also keep a <strong>book.docx</strong> mirror in your Drive folder
+              <small>(updates ~30 s after each change; lets you open the book directly in Word/Pages)</small>
+            </label>
+            <div class="settings-actions">
+              <button class="btn-link" id="export-json-btn">Export book as JSON</button>
+              <button class="btn-link" id="import-json-btn">Import JSON…</button>
+            </div>
             <input type="file" id="import-file-input" accept=".json" hidden />
           </div>
 
@@ -279,6 +297,26 @@
 
   <!-- ============ TOAST ============ -->
   <div id="toast" hidden></div>
+
+  <!-- ============ PUBLISH VERSION MODAL ============ -->
+  <div id="publish-overlay" class="overlay" hidden>
+    <div class="modal-panel">
+      <header><h3>Publish a version</h3></header>
+      <div class="modal-body">
+        <p class="modal-help">
+          Saves a frozen, named copy of your book. It never gets pruned and is mirrored
+          to your Drive's <code>versions/</code> folder as <strong>both .json and .docx</strong>.
+        </p>
+        <label>Name this version
+          <input type="text" id="publish-label-input" placeholder="e.g. Draft 1 — sent to editor" maxlength="80" />
+        </label>
+      </div>
+      <footer>
+        <button class="btn-link" id="publish-cancel">Cancel</button>
+        <button class="btn" id="publish-confirm">Publish</button>
+      </footer>
+    </div>
+  </div>
 
   <!-- App scripts (ES modules, load order matters via imports) -->
   <script type="module" src="js/main.js"></script>

@@ -670,3 +670,143 @@ html, body {
   from { opacity: 0; transform: translate(-50%, 8px); }
   to { opacity: 1; transform: translate(-50%, 0); }
 }
+
+/* ============================================================
+   PHASE 2 — Export menu, Publish modal, mirror toggle, badges
+   ============================================================ */
+
+/* Topbar action buttons */
+.btn-ghost {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+.btn-ghost:hover { background: var(--accent-soft); }
+
+/* Dropdown */
+.dropdown { position: relative; display: inline-block; }
+.dropdown-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  min-width: 240px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  padding: 6px;
+  z-index: 1000;
+}
+.dropdown-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  padding: 8px 12px;
+  font: inherit;
+  color: inherit;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.dropdown-item:hover { background: var(--accent-soft); }
+.dropdown-divider { height: 1px; background: var(--border); margin: 6px 4px; }
+
+/* Publish modal */
+.modal-panel {
+  background: var(--bg-card);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  width: min(520px, 92vw);
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+}
+.modal-panel header {
+  padding: 18px 22px 0;
+}
+.modal-panel header h3 {
+  margin: 0;
+  font-size: 18px;
+}
+.modal-body { padding: 14px 22px; }
+.modal-help { color: var(--text-muted); font-size: 13.5px; margin: 0 0 14px; }
+.modal-body label { display: block; font-weight: 600; }
+.modal-body input[type="text"] {
+  margin-top: 6px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 15px;
+}
+.modal-panel footer {
+  padding: 12px 22px 18px;
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  border-top: 1px solid var(--border);
+}
+
+/* Settings — mirror docx toggle */
+.checkbox-label {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 8px 12px;
+  align-items: start;
+  padding: 10px 0;
+  font-weight: 500;
+}
+.checkbox-label input[type="checkbox"] {
+  margin-top: 4px;
+  width: 16px; height: 16px;
+}
+.checkbox-label small {
+  grid-column: 2;
+  display: block;
+  color: var(--text-muted);
+  font-weight: 400;
+  margin-top: 4px;
+  font-size: 13px;
+}
+.settings-actions { display: flex; gap: 14px; margin-top: 8px; }
+
+/* History — published-version badge + filter pills */
+.badge {
+  display: inline-block;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 999px;
+  vertical-align: middle;
+}
+.badge.published {
+  background: var(--accent);
+  color: #fff;
+}
+.history-label {
+  font-weight: 600;
+  margin-left: 8px;
+}
+.history-filter {
+  display: flex;
+  gap: 6px;
+  margin: 12px 0 18px;
+}
+.history-filter button {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  padding: 4px 12px;
+  border-radius: 999px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.history-filter button.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}

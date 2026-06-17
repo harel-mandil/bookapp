@@ -18,6 +18,8 @@ import * as db from './db.js';
 import * as auth from './auth.js';
 import * as sync from './sync.js';
 import * as snapshots from './snapshots.js';
+import * as exportLib from './export.js';
+import { publishCurrentVersion } from './publish.js';
 import { mountEditor, loadChapter, snapshotChapter, flushPending as flushEditor, cancelPending as cancelEditor } from './editor.js';
 import { sanitizeHtml } from './format.js';
 import { renderDashboard } from './dashboard.js';
@@ -32,6 +34,7 @@ const state = {
   activeChapterId: null,
   activeView: 'dashboard',
   prevTotalWords: 0,            // for milestone tracking
+  historyFilter: 'all',         // 'all' | 'auto' | 'published'
 };
 
 // ============ BOOT ============
@@ -131,11 +134,33 @@ async function boot() {
   document.getElementById('save-client-id-btn').addEventListener('click', saveClientId);
   document.getElementById('edit-goal-btn').addEventListener('click', editDailyGoal);
   document.getElementById('reset-app-btn').addEventListener('click', resetEverything);
-  document.getElementById('export-json-btn').addEventListener('click', exportJson);
+  document.getElementById('export-json-btn').addEventListener('click', () => exportLib.exportBookJson(state.doc));
   document.getElementById('import-json-btn').addEventListener('click', () => {
     document.getElementById('import-file-input').click();
   });
   document.getElementById('import-file-input').addEventListener('change', importJson);
+
+  // Mirror docx toggle (off by default).
+  const mirrorEl = document.getElementById('setting-mirror-docx');
+  if (mirrorEl) {
+    mirrorEl.checked = !!(await db.metaGet('mirrorDocxEnabled', false));
+    mirrorEl.addEventListener('change', async (e) => {
+      await db.metaSet('mirrorDocxEnabled', e.target.checked);
+      if (e.target.checked && auth.isAuthorized()) {
+        sync.markDirty(state.doc); // schedules first docx push
+        toast('Drive will receive book.docx within ~30 s.', 'success');
+      } else if (e.target.checked) {
+        toast('Connect Google Drive first — mirror is enabled but inactive.', 'warning', 4000);
+      } else {
+        toast('book.docx mirror disabled.', '');
+      }
+    });
+  }
+
+  // Export dropdown menu
+  setupExportMenu();
+  // Publish version button + modal
+  setupPublishFlow();
 
   // Settings live-update wiring
   document.getElementById('setting-book-title').addEventListener('input', e => {
@@ -401,18 +426,53 @@ async function addIdeaFromInput() {
 
 async function renderHistory() {
   const ul = document.getElementById('history-list');
+  if (!ul) return;
   const all = (await db.snapshotsAll()).sort((a, b) => b.timestamp - a.timestamp);
-  if (!all.length) {
+
+  // Render filter pills above the list (idempotent — replace any prior pill row).
+  const host = ul.parentElement;
+  let pillRow = host.querySelector('.history-filter');
+  if (!pillRow) {
+    pillRow = document.createElement('div');
+    pillRow.className = 'history-filter';
+    pillRow.innerHTML = `
+      <button data-filter="all">All</button>
+      <button data-filter="published">Published</button>
+      <button data-filter="auto">Auto</button>
+    `;
+    host.insertBefore(pillRow, ul);
+    pillRow.addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-filter]');
+      if (!btn) return;
+      state.historyFilter = btn.dataset.filter;
+      renderHistory();
+    });
+  }
+  pillRow.querySelectorAll('button[data-filter]').forEach(b => {
+    b.classList.toggle('active', b.dataset.filter === state.historyFilter);
+  });
+
+  const filtered = all.filter(s => {
+    const kind = s.kind ?? 'auto';
+    if (state.historyFilter === 'all') return true;
+    return kind === state.historyFilter;
+  });
+
+  if (!filtered.length) {
     ul.innerHTML = `<li class="empty-state">No versions yet.</li>`;
     return;
   }
-  ul.innerHTML = all.map(s => {
+
+  ul.innerHTML = filtered.map(s => {
     const sign = s.wordDelta > 0 ? 'positive' : (s.wordDelta < 0 ? 'negative' : '');
     const deltaTxt = s.wordDelta > 0 ? `+${s.wordDelta}` : (s.wordDelta < 0 ? s.wordDelta : '±0');
+    const isPub = (s.kind ?? 'auto') === 'published';
+    const badge = isPub ? `<span class="badge published">Published</span>` : '';
+    const label = isPub && s.label ? `<span class="history-label">${escapeHtml(s.label)}</span>` : '';
     return `
       <li data-id="${s.id}">
         <div>
-          <div class="history-time">${escapeHtml(fmtTime(s.timestamp))}</div>
+          <div class="history-time">${escapeHtml(fmtTime(s.timestamp))} ${badge}${label}</div>
           <div class="history-delta ${sign}">${deltaTxt} words · ${s.words.toLocaleString()} total · ${escapeHtml(s.reason || '')}</div>
         </div>
         <div>
@@ -499,15 +559,8 @@ async function editDailyGoal() {
 }
 
 async function exportJson() {
-  const blob = new Blob([JSON.stringify(state.doc, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `${(state.doc.title || 'book').replace(/[^a-z0-9]+/gi, '-')}-${isoForFilename()}.json`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  // Kept for backward compatibility — delegates to exportLib.
+  exportLib.exportBookJson(state.doc);
 }
 
 async function importJson(e) {
@@ -699,6 +752,106 @@ function flushAll() {
   // copy is already in IndexedDB so nothing is lost.
   sync.pushNow?.().catch(() => {});
   snapshots.forceSnapshot('hidden').catch(() => {});
+}
+
+// ============ EXPORT MENU + PUBLISH FLOW ============
+
+function setupExportMenu() {
+  const dropdown = document.getElementById('export-dropdown');
+  const btn = document.getElementById('export-btn');
+  const menu = document.getElementById('export-menu');
+  if (!dropdown || !btn || !menu) return;
+
+  const close = () => { menu.hidden = true; };
+  const open = () => { menu.hidden = false; };
+
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (menu.hidden) open(); else close();
+  });
+  document.addEventListener('click', (e) => {
+    if (!dropdown.contains(e.target)) close();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') close();
+  });
+
+  menu.addEventListener('click', async (e) => {
+    const item = e.target.closest('.dropdown-item');
+    if (!item) return;
+    close();
+    flushEditor();              // make sure latest keystrokes are in state.doc
+    const action = item.dataset.export;
+    try {
+      if (action === 'book-docx') {
+        toast('Building book.docx…', '', 1500);
+        await exportLib.exportBookDocx(state.doc);
+      } else if (action === 'chapter-docx') {
+        const ch = state.doc.chapters.find(c => c.id === state.activeChapterId);
+        if (!ch) { toast('Open a chapter first.', 'warning'); return; }
+        toast('Building chapter.docx…', '', 1500);
+        await exportLib.exportChapterDocx(ch, state.doc.title);
+      } else if (action === 'print') {
+        exportLib.printBook(state.doc);
+      } else if (action === 'json') {
+        exportLib.exportBookJson(state.doc);
+      }
+    } catch (err) {
+      console.error('Export failed', err);
+      toast('Export failed: ' + err.message, 'error', 5000);
+    }
+  });
+}
+
+function setupPublishFlow() {
+  const trigger = document.getElementById('publish-version-btn');
+  const overlay = document.getElementById('publish-overlay');
+  const input = document.getElementById('publish-label-input');
+  const cancelBtn = document.getElementById('publish-cancel');
+  const confirmBtn = document.getElementById('publish-confirm');
+  if (!trigger || !overlay || !confirmBtn) return;
+
+  const open = () => {
+    flushEditor();
+    input.value = `Draft — ${new Date().toLocaleDateString()}`;
+    overlay.hidden = false;
+    setTimeout(() => input.focus(), 0);
+    input.select?.();
+  };
+  const close = () => { overlay.hidden = true; };
+
+  trigger.addEventListener('click', open);
+  cancelBtn.addEventListener('click', close);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); confirmBtn.click(); }
+    if (e.key === 'Escape') close();
+  });
+
+  confirmBtn.addEventListener('click', async () => {
+    const label = (input.value || '').trim() || 'Untitled version';
+    confirmBtn.disabled = true;
+    confirmBtn.textContent = 'Publishing…';
+    try {
+      const r = await publishCurrentVersion(label, state.doc, { auth });
+      close();
+      if (auth.isAuthorized() && (r.jsonFileId || r.docxFileId)) {
+        toast(`Published "${label}" to Drive ✓`, 'success', 4000);
+      } else if (auth.isAuthorized()) {
+        toast(`Published "${label}" locally — Drive write failed (will retry).`, 'warning', 5000);
+      } else {
+        toast(`Published "${label}" locally — connect Drive to mirror.`, '', 4000);
+      }
+      logEvent('published_version', `Published "${label}"`).catch(() => {});
+      if (state.activeView === 'history') renderHistory();
+    } catch (err) {
+      console.error('Publish failed', err);
+      toast('Publish failed: ' + err.message, 'error', 5000);
+    } finally {
+      confirmBtn.disabled = false;
+      confirmBtn.textContent = 'Publish';
+    }
+  });
 }
 
 // ============ KICK OFF ============

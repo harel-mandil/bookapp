@@ -15,9 +15,16 @@ const FOLDER_NAME = 'BookApp';
 const BOOK_FILE_NAME = 'book.json';
 export const BOOK_DOCX_NAME = 'book.docx';
 export const VERSIONS_FOLDER_NAME = 'versions';
+const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 
+// Live working file: keyboard-fast.
 const DRIVE_PUSH_DEBOUNCE_MS = 4000;
 const DRIVE_PUSH_MAX_WAIT_MS = 30000;
+
+// docx mirror: longer cadence — generation is 200–800ms of CPU and the file
+// is for "open in Word" workflows, not live collaboration.
+const DOCX_PUSH_DEBOUNCE_MS = 30000;
+const DOCX_PUSH_MAX_WAIT_MS = 120000;
 
 let bookFolderId = null;
 let bookFileId = null;
@@ -26,6 +33,7 @@ let versionsFolderId = null;
 let lastSyncAt = 0;
 let lastDriveModifiedTime = null;
 let pendingDoc = null;
+let lastDocxPushedRevision = null;     // dedupe: skip if doc unchanged
 let onStatus = () => {};
 
 /** Subscribe to sync status updates: 'local' | 'syncing' | 'synced' | 'error' */
@@ -130,17 +138,80 @@ export async function reconcileWithDrive(localDoc, applyRemote) {
   }
 }
 
-/** Mark doc as dirty; schedules a debounced Drive push. */
+/** Mark doc as dirty; schedules a debounced Drive push (json + optional docx). */
 export function markDirty(doc) {
   pendingDoc = doc;
   if (auth.isAuthorized()) {
     schedulePush();
+    schedulePushDocx();
   }
 }
 
 const schedulePush = debounce(() => {
   pushNow().catch(e => console.warn('drive push failed', e));
 }, DRIVE_PUSH_DEBOUNCE_MS, { maxWait: DRIVE_PUSH_MAX_WAIT_MS });
+
+// docx mirror — gated by the user's Settings toggle, deduped by revision,
+// generation deferred to idle time so it never stutters typing.
+const schedulePushDocx = debounce(() => {
+  pushDocxIfEnabled().catch(e => console.warn('docx mirror push failed', e));
+}, DOCX_PUSH_DEBOUNCE_MS, { maxWait: DOCX_PUSH_MAX_WAIT_MS });
+
+async function pushDocxIfEnabled() {
+  if (!auth.isAuthorized()) return;
+  const enabled = await db.metaGet('mirrorDocxEnabled', false);
+  if (!enabled) return;
+  const doc = pendingDoc;
+  if (!doc) return;
+  // Dedupe: skip if doc hasn't changed since last successful docx push.
+  const rev = doc.updatedAt || 0;
+  if (lastDocxPushedRevision === rev) return;
+
+  // Defer the heavy work to idle time. requestIdleCallback is widely available;
+  // fall back to setTimeout for Safari pre-17.4.
+  await new Promise(resolve => {
+    const idle = window.requestIdleCallback || ((cb) => setTimeout(cb, 0));
+    idle(() => resolve());
+  });
+
+  const { htmlToDocxBlob } = await import('./export.js');
+  let blob;
+  try {
+    blob = await htmlToDocxBlob(doc);
+  } catch (e) {
+    console.warn('docx generation failed', e);
+    return;
+  }
+
+  try {
+    await ensureBookFolder();
+    if (!bookDocxFileId) {
+      // Resolve existing first to avoid duplicates if the file was created elsewhere.
+      const existing = await drive.findFileByName(BOOK_DOCX_NAME, bookFolderId);
+      if (existing) bookDocxFileId = existing.id;
+    }
+    const r = await drive.saveBlobFile({
+      fileId: bookDocxFileId,
+      name: BOOK_DOCX_NAME,
+      parentId: bookFolderId,
+      blob,
+      mimeType: DOCX_MIME,
+    });
+    bookDocxFileId = r.id;
+    await db.metaSet('driveBookDocxFileId', bookDocxFileId);
+    lastDocxPushedRevision = rev;
+  } catch (e) {
+    console.warn('docx mirror upload failed', e);
+    if (e?.status === 401) {
+      window.dispatchEvent(new CustomEvent('auth:needs-reconnect'));
+    }
+  }
+}
+
+/** Force an immediate docx mirror push (e.g. right after publishing). No-op if disabled. */
+export async function pushDocxNow() {
+  return pushDocxIfEnabled();
+}
 
 /** Force a push immediately (e.g. before page hide). */
 export async function pushNow() {
