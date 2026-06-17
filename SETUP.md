@@ -3,32 +3,28 @@
 This is your one-time setup. After this, you just open the app and write.
 
 You're going to do **two things**:
-1. **Run the app** (one terminal command, then a browser tab).
+1. **Open the app** (one URL — it's hosted on GitHub Pages).
 2. **Connect Google Drive** (10 minutes in Google Cloud Console — done once, ever).
 
-You can do step 1 and start writing today. Drive sync is optional — your work is safe locally without it. Set it up when you have 10 minutes.
+You can do step 1 and start writing today. Drive sync is optional — your work is safe in your browser's IndexedDB without it. Set it up when you have 10 minutes.
 
 ---
 
-## 1. Run the app
+## 1. Open the app
 
-The app is a static website — no installation, no `npm install`. But browsers block Google Sign-In on `file://` URLs, so we serve it from a tiny local web server.
+The app is hosted live at:
 
-### Easiest way — one command
+# 🌐 https://harel-mandil.github.io/bookapp/
 
-Open Terminal, paste:
+That's it. Bookmark that URL. Open it any time on any device — your work auto-loads from Google Drive once you connect it.
 
-```bash
-cd /Users/C5415849/Desktop/BOOKAPPWEBSITE && python3 -m http.server 5173
-```
+### How updates work
 
-Then open: **http://localhost:5173**
+When I push code changes to the GitHub repo, the live URL updates automatically within 1–2 minutes. **Your book content is in IndexedDB + Drive — never in the repo — so app updates never touch your writing.**
 
-That's it. Leave the terminal window open while you write. To stop the server: `Ctrl+C` in the terminal.
+### Running locally (optional, for development)
 
-### Even easier — double-click
-
-There's a `start.command` file in this folder. Double-click it. It does the same thing.
+If you want to run a local copy of the app (e.g. to test changes before pushing them), there's a `start.command` file — double-click it, then open `http://localhost:5173`. You'd also need to add `http://localhost:5173` as a second authorized origin in step 2.4 below.
 
 ---
 
@@ -70,16 +66,17 @@ Until you do this, the app saves everything locally to your browser's storage �
 2. **+ Create Credentials → OAuth client ID**.
 3. Application type: **Web application**.
 4. Name: `BookApp Web Client`.
-5. **Authorized JavaScript origins** → **+ Add URI**: paste exactly `http://localhost:5173`
+5. **Authorized JavaScript origins** → **+ Add URI**: paste exactly `https://harel-mandil.github.io`
    - No path, no trailing slash. Just the origin.
-   - If you ever host the app elsewhere (GitHub Pages, your own domain), add that origin too.
+   - **Important:** the origin is `https://harel-mandil.github.io` (no `/bookapp` at the end). Google validates by origin, not path.
+   - If you'll also run a local dev copy, click **+ Add URI** again and add `http://localhost:5173` as a second origin.
 6. **Authorized redirect URIs**: leave **empty**.
 7. **Create**.
 8. A dialog pops up showing a Client ID like `123456789-abc...xyz.apps.googleusercontent.com`. **Copy it.**
 
 #### 2.5 Paste it into the app
 
-1. Open the app (http://localhost:5173).
+1. Open the app: **<https://harel-mandil.github.io/bookapp/>**
 2. Sidebar → **Settings**.
 3. **Google Drive** → paste your Client ID → **Save Client ID**.
 4. Top right → **Connect Google Drive**.
@@ -108,7 +105,7 @@ Your **Mac dying** would lose: the app code (rebuildable in minutes), version hi
 
 **"Connect failed: popup_closed_by_user"** — The popup blocker ate it, or you closed the popup. Try again — make sure you click **Connect Google Drive** directly (don't click anything else first).
 
-**"Connect failed: redirect_uri_mismatch"** — The origin you're running on isn't in the authorized list in Google Cloud Console. Check: are you on `http://localhost:5173` exactly? (Not `127.0.0.1`, not a different port.) Or update the authorized origin in the Console.
+**"Connect failed: redirect_uri_mismatch"** — The origin you're running on isn't in the authorized list in Google Cloud Console. Check the address bar — you should be on `https://harel-mandil.github.io/bookapp/`, and `https://harel-mandil.github.io` (without the path) must be in your authorized origins list. If you added `localhost:5173` separately, make sure that's there too if you're running locally.
 
 **"Drive auth expired"** — Tokens last 1 hour. The app silently refreshes most of the time, but Safari and private windows sometimes block silent refresh. Click **Connect Google Drive** again to re-auth.
 
