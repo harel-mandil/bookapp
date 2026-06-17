@@ -43,6 +43,7 @@
       <div class="sidebar-section" id="chapters-section">
         <div class="section-title">
           Chapters
+          <button class="icon-btn" id="add-chapter-from-docx-btn" title="Add chapter from .docx file">📄+</button>
           <button class="icon-btn" id="add-chapter-btn" title="Add chapter">+</button>
         </div>
         <ul class="chapters-list" id="chapters-list"></ul>
@@ -267,8 +268,10 @@
             <div class="settings-actions">
               <button class="btn-link" id="export-json-btn">Export book as JSON</button>
               <button class="btn-link" id="import-json-btn">Import JSON…</button>
+              <button class="btn-link" id="import-docx-btn">Import .docx…</button>
             </div>
             <input type="file" id="import-file-input" accept=".json" hidden />
+            <input type="file" id="import-docx-input" accept=".docx" hidden />
           </div>
 
           <div class="setting-block danger">
@@ -295,8 +298,47 @@
     </div>
   </div>
 
-  <!-- ============ TOAST ============ -->
-  <div id="toast" hidden></div>
+  <!-- ============ DOCX IMPORT MODAL ============ -->
+  <div id="import-docx-overlay" class="overlay" hidden>
+    <div class="modal-panel">
+      <header><h3>Import a Word document</h3></header>
+      <div class="modal-body">
+        <p class="modal-help">
+          File: <strong id="import-docx-name"></strong><br>
+          A safety version (<em>"Pre-import: …"</em>) is published before any change,
+          so your current chapters are always restorable from History.
+        </p>
+        <div class="import-options">
+          <label class="import-option">
+            <input type="radio" name="import-mode" value="one-chapter" checked>
+            <div>
+              <div class="opt-title">Add as one chapter</div>
+              <div class="opt-help">The whole .docx becomes a single new chapter, appended to the end.</div>
+            </div>
+          </label>
+          <label class="import-option">
+            <input type="radio" name="import-mode" value="split-h1">
+            <div>
+              <div class="opt-title">Split by H1 → multiple chapters</div>
+              <div class="opt-help">Each <code>Heading 1</code> in the file starts a new chapter. Existing chapters stay.</div>
+            </div>
+          </label>
+          <label class="import-option danger">
+            <input type="radio" name="import-mode" value="replace">
+            <div>
+              <div class="opt-title">Replace entire book</div>
+              <div class="opt-help">Wipes current chapters. The safety version above lets you undo.</div>
+            </div>
+          </label>
+        </div>
+        <div id="import-docx-messages" class="import-messages" hidden></div>
+      </div>
+      <footer>
+        <button class="btn-link" id="import-docx-cancel">Cancel</button>
+        <button class="btn" id="import-docx-confirm">Import</button>
+      </footer>
+    </div>
+  </div>
 
   <!-- ============ PUBLISH VERSION MODAL ============ -->
   <div id="publish-overlay" class="overlay" hidden>
@@ -317,6 +359,9 @@
       </footer>
     </div>
   </div>
+
+  <!-- ============ TOAST ============ -->
+  <div id="toast" hidden></div>
 
   <!-- App scripts (ES modules, load order matters via imports) -->
   <script type="module" src="js/main.js"></script>

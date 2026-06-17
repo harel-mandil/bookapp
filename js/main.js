@@ -20,6 +20,7 @@ import * as sync from './sync.js';
 import * as snapshots from './snapshots.js';
 import * as exportLib from './export.js';
 import { publishCurrentVersion } from './publish.js';
+import { docxBlobToHtml, splitHtmlByH1 } from './import.js';
 import { mountEditor, loadChapter, snapshotChapter, flushPending as flushEditor, cancelPending as cancelEditor } from './editor.js';
 import { sanitizeHtml } from './format.js';
 import { renderDashboard } from './dashboard.js';
@@ -183,6 +184,12 @@ async function boot() {
 
   // Add chapter
   document.getElementById('add-chapter-btn').addEventListener('click', addChapter);
+  // Add chapter from .docx (sidebar quick action — skips the modal, always one-chapter)
+  setupQuickDocxImport();
+  // Settings → Import .docx (full modal with mode picker)
+  setupSettingsDocxImport();
+  // Drag-and-drop .docx onto the chapters list
+  setupChapterListDropZone();
 
   // Ideas
   document.getElementById('add-idea-btn').addEventListener('click', addIdeaFromInput);
@@ -752,6 +759,242 @@ function flushAll() {
   // copy is already in IndexedDB so nothing is lost.
   sync.pushNow?.().catch(() => {});
   snapshots.forceSnapshot('hidden').catch(() => {});
+}
+
+// ============ DOCX IMPORT FLOW ============
+
+/**
+ * Apply a .docx import to state.doc. Always non-destructive: a Published
+ * snapshot ('Pre-import: <filename>') is created BEFORE any mutation, so the
+ * pre-import state is always reachable from History (and from Drive's
+ * versions/ folder once Drive is connected).
+ *
+ * @param {object} opts
+ * @param {'one-chapter'|'split-h1'|'replace'} opts.mode
+ * @param {File} opts.file
+ */
+async function applyDocxImport({ mode, file }) {
+  // 1. Convert .docx → sanitized HTML.
+  let html, messages;
+  try {
+    ({ html, messages } = await docxBlobToHtml(file));
+  } catch (e) {
+    toast('Could not read .docx: ' + e.message, 'error', 5000);
+    return;
+  }
+
+  // 2. Safety publish — frozen snapshot of the current state, named after the import.
+  try {
+    await publishCurrentVersion(`Pre-import: ${file.name}`, state.doc, { auth });
+  } catch (e) {
+    console.warn('safety publish failed (continuing import)', e);
+  }
+
+  // 3. Build new chapter rows.
+  const fallbackTitle = file.name.replace(/\.docx$/i, '') || 'Imported chapter';
+  let newChapters;
+  if (mode === 'split-h1') {
+    newChapters = splitHtmlByH1(html, fallbackTitle).map(c => makeChapter(c.title, c.html));
+  } else {
+    // one-chapter and replace both produce a single chapter from the file.
+    newChapters = [makeChapter(fallbackTitle, html || '<p><br></p>')];
+  }
+
+  // 4. Apply.
+  flushEditor();
+  cancelEditor();
+  if (mode === 'replace') {
+    state.doc.chapters = newChapters;
+  } else {
+    state.doc.chapters = state.doc.chapters.concat(newChapters);
+  }
+  state.doc.updatedAt = Date.now();
+  await db.docSave(state.doc);
+
+  // 5. Activate the first newly-imported chapter so the user sees the result.
+  state.activeChapterId = newChapters[0].id;
+  loadChapter(newChapters[0]);
+  refreshPageHeader();
+  renderSidebarChapters();
+  setActiveView('book');
+
+  // 6. Push immediately — don't wait for debounce.
+  sync.markDirty(state.doc);
+  sync.pushNow?.().catch(() => {});
+
+  // 7. Tell the user, and surface mammoth's "things I dropped" warnings if any.
+  const lossyMsg = (messages || []).filter(m => m.type === 'warning').length;
+  if (mode === 'replace') {
+    toast(`Replaced book with ${newChapters.length} chapter(s) from ${file.name}.`, 'success', 4500);
+  } else if (mode === 'split-h1') {
+    toast(`Imported ${newChapters.length} chapter(s) from ${file.name}.`, 'success', 4500);
+  } else {
+    toast(`Added "${newChapters[0].title}" from ${file.name}.`, 'success', 4500);
+  }
+  if (lossyMsg) {
+    toast(`${lossyMsg} feature(s) from Word were not imported (footnotes, comments, etc).`, 'warning', 6000);
+  }
+  logEvent('imported_docx', `Imported ${file.name}`, { mode, chapters: newChapters.length }).catch(() => {});
+}
+
+/** Build a fresh chapter object with sane metadata from imported title + html. */
+function makeChapter(title, html) {
+  return {
+    id: uid('ch_'),
+    title: (title || 'Imported chapter').slice(0, 200),
+    html,
+    status: 'drafting',
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  };
+}
+
+/** Sidebar's 📄+ button — quick path, always one-chapter, no modal. */
+function setupQuickDocxImport() {
+  const btn = document.getElementById('add-chapter-from-docx-btn');
+  const input = document.getElementById('import-docx-input');
+  if (!btn || !input) return;
+  btn.addEventListener('click', () => {
+    // Use a separate handler instance so the Settings modal doesn't fight us.
+    input.dataset.target = 'quick';
+    input.click();
+  });
+  input.addEventListener('change', async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (input.dataset.target === 'quick') {
+      delete input.dataset.target;
+      await applyDocxImport({ mode: 'one-chapter', file });
+      e.target.value = '';
+    } else {
+      // Settings flow — open the modal.
+      openImportDocxModal(file);
+      e.target.value = '';
+    }
+  });
+}
+
+/** Settings → "Import .docx…" — opens the modal. */
+function setupSettingsDocxImport() {
+  const btn = document.getElementById('import-docx-btn');
+  const input = document.getElementById('import-docx-input');
+  if (!btn || !input) return;
+  btn.addEventListener('click', () => {
+    input.dataset.target = 'modal';
+    input.click();
+  });
+
+  // Modal wiring.
+  const overlay = document.getElementById('import-docx-overlay');
+  const cancel = document.getElementById('import-docx-cancel');
+  const confirm = document.getElementById('import-docx-confirm');
+  if (!overlay || !cancel || !confirm) return;
+  cancel.addEventListener('click', closeImportDocxModal);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeImportDocxModal(); });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !overlay.hidden) closeImportDocxModal();
+  });
+}
+
+let _pendingImportFile = null;
+
+function openImportDocxModal(file) {
+  _pendingImportFile = file;
+  const overlay = document.getElementById('import-docx-overlay');
+  const nameEl = document.getElementById('import-docx-name');
+  const confirm = document.getElementById('import-docx-confirm');
+  if (!overlay || !confirm) return;
+  nameEl.textContent = file.name;
+  // Reset to default selection.
+  const radios = overlay.querySelectorAll('input[name="import-mode"]');
+  radios.forEach(r => { r.checked = (r.value === 'one-chapter'); });
+  // Hide leftover messages.
+  const msg = document.getElementById('import-docx-messages');
+  if (msg) { msg.hidden = true; msg.innerHTML = ''; }
+  confirm.disabled = false;
+  confirm.textContent = 'Import';
+
+  overlay.hidden = false;
+
+  // Replace the click handler each open so we capture the current file.
+  const newConfirm = confirm.cloneNode(true);
+  confirm.parentNode.replaceChild(newConfirm, confirm);
+  newConfirm.addEventListener('click', async () => {
+    const mode = (overlay.querySelector('input[name="import-mode"]:checked') || {}).value || 'one-chapter';
+    if (mode === 'replace') {
+      const ok = window.confirm(
+        `Replace your entire book with "${_pendingImportFile.name}"?\n\n` +
+        `A "Pre-import" version will be saved automatically — you can always restore from History.`
+      );
+      if (!ok) return;
+    }
+    newConfirm.disabled = true;
+    newConfirm.textContent = 'Importing…';
+    try {
+      await applyDocxImport({ mode, file: _pendingImportFile });
+      closeImportDocxModal();
+    } catch (e) {
+      toast('Import failed: ' + e.message, 'error', 5000);
+    } finally {
+      _pendingImportFile = null;
+    }
+  });
+}
+
+function closeImportDocxModal() {
+  const overlay = document.getElementById('import-docx-overlay');
+  if (overlay) overlay.hidden = true;
+  _pendingImportFile = null;
+}
+
+/**
+ * Drag-and-drop a .docx onto the chapter list — appends as one new chapter.
+ * The editor's existing drop handler explicitly rejects file drops, so the
+ * editor stays a safe surface; the chapter list is the only file-drop target.
+ */
+function setupChapterListDropZone() {
+  const ul = document.getElementById('chapters-list');
+  if (!ul) return;
+
+  let dragCount = 0;
+
+  const isDocxDrag = (e) => {
+    const items = e.dataTransfer?.items;
+    if (!items) return false;
+    for (const it of items) {
+      // During dragover the file isn't accessible yet — check type heuristically.
+      if (it.kind === 'file') return true;
+    }
+    return false;
+  };
+
+  ul.addEventListener('dragenter', (e) => {
+    if (!isDocxDrag(e)) return;
+    e.preventDefault();
+    dragCount++;
+    ul.classList.add('drag-over');
+  });
+  ul.addEventListener('dragover', (e) => {
+    if (!isDocxDrag(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  });
+  ul.addEventListener('dragleave', () => {
+    dragCount = Math.max(0, dragCount - 1);
+    if (dragCount === 0) ul.classList.remove('drag-over');
+  });
+  ul.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    dragCount = 0;
+    ul.classList.remove('drag-over');
+    const files = Array.from(e.dataTransfer?.files || []);
+    const docx = files.find(f => /\.docx$/i.test(f.name));
+    if (!docx) {
+      if (files.length) toast('Only .docx files are supported here.', 'warning', 3500);
+      return;
+    }
+    await applyDocxImport({ mode: 'one-chapter', file: docx });
+  });
 }
 
 // ============ EXPORT MENU + PUBLISH FLOW ============
