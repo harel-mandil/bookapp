@@ -53,22 +53,7 @@ async function boot() {
   state.prevTotalWords = totalStats(doc.chapters || []).words;
   state.activeChapterId = doc.chapters[0]?.id || null;
 
-  // ── Migration safety: first time we boot the TipTap editor on a doc that
-  // pre-dates it, auto-publish a 'Pre-TipTap-migration' version so the user
-  // can always roll back. Idempotent — only fires once per book.
-  const editorEngine = await db.metaGet('editorEngine', null);
-  if (editorEngine !== 'tiptap' && doc.chapters?.some(c => c.html?.trim())) {
-    try {
-      // Lazy import to avoid pulling export.js if there's nothing to publish.
-      const { publishCurrentVersion } = await import('./publish.js');
-      await publishCurrentVersion('Pre-TipTap-migration', doc, { auth });
-    } catch (e) {
-      console.warn('migration safety publish failed (continuing)', e);
-    }
-  }
-  await db.metaSet('editorEngine', 'tiptap');
-
-  // Mount editor (TipTap loads from CDN — this is async)
+  // Mount the editor (vanilla contenteditable — no external deps)
   await mountEditor({
     editorEl: document.getElementById('editor'),
     titleEl: document.getElementById('chapter-title-input'),
@@ -205,6 +190,8 @@ async function boot() {
   setupSettingsDocxImport();
   // Drag-and-drop .docx onto the chapters list
   setupChapterListDropZone();
+  // Left Table-of-Contents panel in the book view
+  setupBookToc();
 
   // Ideas
   document.getElementById('add-idea-btn').addEventListener('click', addIdeaFromInput);
@@ -298,6 +285,7 @@ function handleEditorChange(updatedChapter) {
 
   // Reflect in sidebar
   renderSidebarChapters();
+  scheduleTocRefresh();
 
   // Reflect in page header chapter title
   document.getElementById('page-header-chapter').textContent = (updatedChapter.title || '').toUpperCase();
@@ -391,6 +379,7 @@ function setActiveChapter(id) {
     refreshPageHeader();
   }
   renderSidebarChapters();
+  renderBookToc();
 }
 
 function refreshPageHeader() {
@@ -415,6 +404,7 @@ function addChapter() {
   setActiveView('book');
   persistDocSoon();
   logEvent('started_chapter', `Started "${ch.title}"`).catch(() => {});
+  renderBookToc();
 }
 
 // ============ IDEAS ============
@@ -1020,6 +1010,132 @@ function setupChapterListDropZone() {
     }
     await applyDocxImport({ mode: 'one-chapter', file: docx });
   });
+}
+
+// ============ BOOK TABLE OF CONTENTS (left panel) ============
+
+let _tocRefreshScheduled = false;
+
+function setupBookToc() {
+  // Collapse / expand
+  document.getElementById('toc-collapse-btn')?.addEventListener('click', () => {
+    document.querySelector('.book-body')?.classList.add('toc-collapsed');
+  });
+  document.getElementById('toc-show-btn')?.addEventListener('click', () => {
+    document.querySelector('.book-body')?.classList.remove('toc-collapsed');
+  });
+
+  // Recompute when the editor's outline changes
+  window.addEventListener('book:toc-dirty', scheduleTocRefresh);
+
+  // Initial render
+  renderBookToc();
+}
+
+function scheduleTocRefresh() {
+  if (_tocRefreshScheduled) return;
+  _tocRefreshScheduled = true;
+  // Coalesce bursts into one render per ~300 ms.
+  setTimeout(() => {
+    _tocRefreshScheduled = false;
+    renderBookToc();
+  }, 300);
+}
+
+/**
+ * Render the chapters + active-chapter heading outline.
+ * Lightweight DOM build (no innerHTML for buttons so handlers stay attached).
+ */
+function renderBookToc() {
+  const body = document.getElementById('book-toc-body');
+  if (!body) return;
+  body.innerHTML = '';
+
+  state.doc.chapters.forEach((ch, idx) => {
+    const isActive = ch.id === state.activeChapterId;
+
+    const btn = document.createElement('button');
+    btn.className = 'toc-chapter' + (isActive ? ' active' : '');
+
+    const num = document.createElement('span');
+    num.className = 'toc-chapter-num';
+    num.textContent = (idx + 1) + '.';
+    btn.appendChild(num);
+
+    const name = document.createTextNode((ch.title || 'Untitled').slice(0, 60));
+    btn.appendChild(name);
+
+    const words = document.createElement('span');
+    words.className = 'toc-chapter-words';
+    words.textContent = wordsOf(ch).toLocaleString();
+    btn.appendChild(words);
+
+    btn.addEventListener('click', () => {
+      if (state.activeChapterId !== ch.id) setActiveChapter(ch.id);
+      else scrollEditorToTop();
+      setActiveView('book');
+    });
+    body.appendChild(btn);
+
+    // Heading outline only for the active chapter
+    if (isActive) {
+      const headings = extractHeadings(ch.html);
+      if (headings.length) {
+        const sub = document.createElement('div');
+        sub.className = 'toc-headings';
+        headings.forEach(h => {
+          const hb = document.createElement('button');
+          hb.className = 'toc-heading h' + h.level;
+          hb.textContent = h.text;
+          hb.title = h.text;
+          hb.addEventListener('click', () => scrollToHeading(h.text, h.level));
+          sub.appendChild(hb);
+        });
+        body.appendChild(sub);
+      }
+    }
+  });
+}
+
+/** Pull H1/H2 text out of HTML (lightweight regex — works on sanitized output). */
+function extractHeadings(html) {
+  const out = [];
+  const re = /<h([12])\b[^>]*>([\s\S]*?)<\/h\1>/gi;
+  let m;
+  while ((m = re.exec(html || '')) !== null) {
+    const text = m[2].replace(/<[^>]+>/g, '').trim();
+    if (text) out.push({ level: parseInt(m[1], 10), text });
+  }
+  return out;
+}
+
+/** Scroll the editor wrap so the requested heading is near the top. */
+function scrollToHeading(text, level) {
+  const editor = document.getElementById('editor');
+  if (!editor) return;
+  const tag = 'H' + level;
+  const candidate = [...editor.querySelectorAll(tag)].find(
+    el => el.textContent.trim() === text
+  );
+  if (!candidate) return;
+  const wrap = document.querySelector('.book-page-wrap');
+  if (!wrap) return;
+  const wrapRect = wrap.getBoundingClientRect();
+  const elRect = candidate.getBoundingClientRect();
+  wrap.scrollBy({ top: elRect.top - wrapRect.top - 80, behavior: 'smooth' });
+  // Place caret at the heading.
+  const range = document.createRange();
+  range.selectNodeContents(candidate);
+  range.collapse(true);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+  editor.focus();
+}
+
+function scrollEditorToTop() {
+  const wrap = document.querySelector('.book-page-wrap');
+  if (wrap) wrap.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
 // ============ EXPORT MENU + PUBLISH FLOW ============

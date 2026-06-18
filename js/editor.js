@@ -1,194 +1,181 @@
 // ============================================================
-// editor.js — TipTap-based rich text editor.
+// editor.js — Vanilla contenteditable editor (no external deps).
 //
-// Public API (unchanged from the contenteditable era — main.js calls these):
+// Why not a framework? After trying TipTap from a CDN, transient network
+// failures pulling 11 sub-bundles made the editor unusable. This rewrite
+// uses what every browser has shipped for 20 years: contenteditable +
+// document.execCommand. Zero dependencies, instant boot, native undo.
+//
+// Supported features:
+//   Bold, Italic, Underline, Strike     execCommand
+//   H1, H2, Paragraph, Blockquote        formatBlock
+//   Bullet & numbered lists              insertUnorderedList / insertOrderedList
+//   Alignment (left/center/right/justify) justifyLeft/Center/Right/Full
+//   Undo / Redo                          native (execCommand)
+//   Link (prompt for URL)                custom + createLink
+//   Image (URL or upload, base64)        insertHTML with sanitized <img>
+//   Table (3x3 with header row)          insertHTML
+//   Scene break ⁂                        insertHTML <p class="scene-break">
+//   Paste sanitization                   beforeinput / paste handler + sanitizeHtml
+//   Find / Replace (per-chapter)         TreeWalker scan + Range
+//
+// Public API (unchanged from before — main.js doesn't need updating):
 //   mountEditor({editorEl, titleEl, toolbarEl, onChange})
 //   loadChapter(chapter)
 //   snapshotChapter() -> {title, html}
 //   flushPending()
 //   cancelPending()
 //
-// Implementation: TipTap (v2) loaded as ESM from esm.sh — no build step.
-// We register the same StarterKit extensions the project needed before
-// (paragraph, heading, bold, italic, blockquote, history) PLUS the new
-// rich-text capabilities the user asked for: images, links, tables,
-// underline, strike, alignment, lists, undo/redo (built into history),
-// placeholder, and a custom SceneBreak node so the existing
-// `<p class="scene-break">` markers round-trip correctly.
-//
-// Migration safety: main.js auto-publishes a 'Pre-TipTap-migration' version
-// on first run (see ensureTipTapMigration()).
+// IMPORTANT — execCommand is technically deprecated, but no browser is
+// removing it any time soon (Google Docs, Notion, Substack all rely on it).
+// It's the simplest reliable way to wire a contenteditable to native
+// formatting + undo. When that finally changes, swap the implementation
+// here without touching main.js.
 // ============================================================
 
 import { stats } from './stats.js';
-import { debounce } from './utils.js';
+import { debounce, escapeHtml } from './utils.js';
 import { sanitizeHtml } from './sanitize.js';
 
-// Lazy-loaded once at first mount.
-let _tiptap = null;
-
-const CDN = {
-  core:        'https://esm.sh/@tiptap/core@2.10.3',
-  starterKit:  'https://esm.sh/@tiptap/starter-kit@2.10.3',
-  image:       'https://esm.sh/@tiptap/extension-image@2.10.3',
-  link:        'https://esm.sh/@tiptap/extension-link@2.10.3',
-  underline:   'https://esm.sh/@tiptap/extension-underline@2.10.3',
-  textAlign:   'https://esm.sh/@tiptap/extension-text-align@2.10.3',
-  table:       'https://esm.sh/@tiptap/extension-table@2.10.3',
-  tableRow:    'https://esm.sh/@tiptap/extension-table-row@2.10.3',
-  tableCell:   'https://esm.sh/@tiptap/extension-table-cell@2.10.3',
-  tableHeader: 'https://esm.sh/@tiptap/extension-table-header@2.10.3',
-  placeholder: 'https://esm.sh/@tiptap/extension-placeholder@2.10.3',
-};
-
-async function loadTipTap() {
-  if (_tiptap) return _tiptap;
-  const [core, starter, image, link, underline, textAlign, table, tr, td, th, placeholder] = await Promise.all([
-    import(CDN.core),
-    import(CDN.starterKit),
-    import(CDN.image),
-    import(CDN.link),
-    import(CDN.underline),
-    import(CDN.textAlign),
-    import(CDN.table),
-    import(CDN.tableRow),
-    import(CDN.tableCell),
-    import(CDN.tableHeader),
-    import(CDN.placeholder),
-  ]);
-
-  _tiptap = {
-    Editor: core.Editor,
-    Node: core.Node,
-    mergeAttributes: core.mergeAttributes,
-    StarterKit: starter.default || starter.StarterKit,
-    Image: image.default || image.Image,
-    Link: link.default || link.Link,
-    Underline: underline.default || underline.Underline,
-    TextAlign: textAlign.default || textAlign.TextAlign,
-    Table: table.default || table.Table,
-    TableRow: tr.default || tr.TableRow,
-    TableCell: td.default || td.TableCell,
-    TableHeader: th.default || th.TableHeader,
-    Placeholder: placeholder.default || placeholder.Placeholder,
-  };
-  return _tiptap;
-}
-
-let editor = null;          // TipTap Editor instance
+let editorEl = null;
 let titleEl = null;
 let toolbarEl = null;
 let onChange = null;
 let currentChapter = null;
-let mountTarget = null;     // the element where TipTap's contenteditable lives
+let suppressChange = false;   // true while we're loading a chapter
 
 /**
- * Mount the editor. Replaces `editorEl`'s contents with TipTap's
- * managed DOM. Called once on app boot.
+ * Mount the editor. Called once on app boot.
+ * Despite being synchronous internally, the signature stays async so existing
+ * callers (`await mountEditor(...)`) keep working.
  */
 export async function mountEditor(opts) {
-  mountTarget = opts.editorEl;
+  editorEl = opts.editorEl;
   titleEl = opts.titleEl;
   toolbarEl = opts.toolbarEl;
   onChange = opts.onChange;
 
-  // Show a tiny loading state while the bundle downloads.
-  mountTarget.innerHTML = '<p style="color:#9a9a9a;font-style:italic">Loading editor…</p>';
-  mountTarget.contentEditable = 'false';
+  editorEl.contentEditable = 'true';
+  editorEl.spellcheck = true;
 
-  const T = await loadTipTap();
-
-  // ============ Custom SceneBreak node ============
-  // Survives round-trip with the existing `<p class="scene-break">` markup.
-  const SceneBreak = T.Node.create({
-    name: 'sceneBreak',
-    group: 'block',
-    atom: true,
-    selectable: true,
-    parseHTML() {
-      return [{ tag: 'p.scene-break' }];
-    },
-    renderHTML({ HTMLAttributes }) {
-      return ['p', T.mergeAttributes(HTMLAttributes, { class: 'scene-break', contenteditable: 'false' })];
-    },
-    addCommands() {
-      return {
-        insertSceneBreak: () => ({ commands }) => commands.insertContent({ type: this.name }),
-      };
-    },
-  });
-
-  editor = new T.Editor({
-    element: mountTarget,
-    content: '<p></p>',
-    extensions: [
-      T.StarterKit.configure({
-        // History is on by default — provides Cmd+Z / Cmd+Shift+Z.
-      }),
-      T.Underline,
-      T.Link.configure({
-        openOnClick: false,
-        autolink: true,
-        protocols: ['http', 'https', 'mailto'],
-        HTMLAttributes: { rel: 'noopener noreferrer', target: '_blank' },
-      }),
-      T.Image.configure({ inline: false, allowBase64: true }),
-      T.TextAlign.configure({ types: ['heading', 'paragraph'] }),
-      T.Table.configure({ resizable: true, HTMLAttributes: { class: 'editor-table' } }),
-      T.TableRow,
-      T.TableCell,
-      T.TableHeader,
-      T.Placeholder.configure({ placeholder: 'Begin your chapter here…' }),
-      SceneBreak,
-    ],
-    onUpdate: () => {
-      fireChange();
-      refreshToolbar();
-      refreshWordCount();
-    },
-    onSelectionUpdate: () => {
-      refreshToolbar();
-    },
-  });
-
-  // ============ Toolbar wiring ============
-  toolbarEl.addEventListener('click', (e) => {
-    const btn = e.target.closest('.tb-btn, .dropdown-item[data-cmd]');
-    if (!btn) return;
-    const cmd = btn.dataset.cmd;
-    if (!cmd) return;
+  // ============ TOOLBAR ============
+  toolbarEl.addEventListener('mousedown', (e) => {
+    // mousedown (not click) so the editor never loses focus and the
+    // selection survives — execCommand needs a live selection.
+    const btn = e.target.closest('.tb-btn');
+    if (!btn || !btn.dataset.cmd) return;
     e.preventDefault();
-    runCommand(cmd, btn);
-    editor.commands.focus();
+    runCommand(btn.dataset.cmd);
+  });
+
+  // ============ TYPING ============
+  editorEl.addEventListener('input', () => {
+    if (suppressChange) return;
+    normalizeRoot();
+    fireChange();
+    refreshToolbar();
+  });
+  editorEl.addEventListener('keyup',   refreshToolbar);
+  editorEl.addEventListener('mouseup', refreshToolbar);
+  document.addEventListener('selectionchange', () => {
+    if (document.activeElement !== editorEl) return;
     refreshToolbar();
   });
 
-  // Keep title in sync.
-  titleEl.addEventListener('input', () => fireChange());
+  // ============ KEYBOARD SHORTCUTS ============
+  editorEl.addEventListener('keydown', (e) => {
+    const mod = e.metaKey || e.ctrlKey;
+    if (!mod) return;
+    // Native B/I/U already work; we just intercept K for link.
+    if (e.key === 'k' || e.key === 'K') {
+      e.preventDefault();
+      promptLink();
+    }
+  });
+
+  // ============ PASTE ============
+  // Paste = sanitize HTML so Word/Google Docs styles don't pollute the doc.
+  editorEl.addEventListener('paste', (e) => {
+    e.preventDefault();
+    const html = e.clipboardData?.getData('text/html');
+    const text = e.clipboardData?.getData('text/plain');
+    let toInsert;
+    if (html) {
+      toInsert = sanitizeHtml(html);
+    } else if (text) {
+      toInsert = text.split(/\n{2,}/)
+        .map(p => `<p>${escapeHtml(p).replace(/\n/g, '<br>')}</p>`)
+        .join('');
+    }
+    if (!toInsert) return;
+    document.execCommand('insertHTML', false, toInsert);
+    fireChange();
+  });
+
+  // ============ DROP — accept image files; reject other files ============
+  editorEl.addEventListener('dragover', (e) => e.preventDefault());
+  editorEl.addEventListener('drop', (e) => {
+    const files = Array.from(e.dataTransfer?.files || []);
+    const img = files.find(f => /^image\//.test(f.type));
+    if (img) {
+      e.preventDefault();
+      readFileAsDataUrl(img).then(src => {
+        moveCaretToDropPoint(e);
+        insertImageDataUrl(src, img.name);
+      });
+      return;
+    }
+    if (files.length) {
+      // Non-image file — let the chapter list handler take it (drag-drop
+      // import). We just block the editor from ingesting it as garbage.
+      e.preventDefault();
+      return;
+    }
+    // HTML / text drop — sanitize.
+    const html = e.dataTransfer?.getData('text/html');
+    const text = e.dataTransfer?.getData('text/plain');
+    if (!html && !text) return;
+    e.preventDefault();
+    moveCaretToDropPoint(e);
+    const clean = html ? sanitizeHtml(html) : `<p>${escapeHtml(text)}</p>`;
+    document.execCommand('insertHTML', false, clean);
+    fireChange();
+  });
+
+  // ============ TITLE FIELD ============
+  titleEl.addEventListener('input', () => {
+    if (suppressChange) return;
+    fireChange();
+  });
 
   refreshToolbar();
   refreshWordCount();
 }
 
-// ============ CHAPTER LOAD/SAVE ============
+// ============ CHAPTER LOAD / SAVE ============
 
 /** Load a chapter into the editor. */
 export function loadChapter(chapter) {
   currentChapter = chapter;
-  if (editor) {
-    // emitUpdate:false avoids re-firing onChange during load.
-    editor.commands.setContent(chapter.html || '<p></p>', false);
+  suppressChange = true;
+  try {
+    editorEl.innerHTML = chapter.html || '<p><br></p>';
+    titleEl.value = chapter.title || '';
+    if (!editorEl.firstChild) editorEl.innerHTML = '<p><br></p>';
+  } finally {
+    // Release on next tick so the input event fired by setting innerHTML/value doesn't fire change.
+    setTimeout(() => { suppressChange = false; }, 0);
   }
-  if (titleEl) titleEl.value = chapter.title || '';
   refreshToolbar();
   refreshWordCount();
+  notifyTocDirty();
 }
 
-/** Returns current chapter snapshot (title + html). */
+/** Returns the current chapter snapshot (title + html). */
 export function snapshotChapter() {
   return {
     title: titleEl ? titleEl.value : (currentChapter?.title ?? ''),
-    html: editor ? sanitizeHtml(editor.getHTML()) : (currentChapter?.html ?? ''),
+    html: editorEl ? sanitizeHtml(editorEl.innerHTML) : (currentChapter?.html ?? ''),
   };
 }
 
@@ -198,6 +185,7 @@ const fireChangeDebounced = debounce(() => {
   if (!currentChapter || !onChange) return;
   const snap = snapshotChapter();
   onChange({ ...currentChapter, ...snap });
+  notifyTocDirty();
 }, 600, { maxWait: 8000 });
 
 function fireChange() {
@@ -205,45 +193,217 @@ function fireChange() {
   fireChangeDebounced();
 }
 
-/** Flush pending debounce — call before swapping chapters or persisting. */
-export function flushPending() {
-  fireChangeDebounced.flush?.();
+/** Flush pending debounce — call before swapping chapters. */
+export function flushPending() { fireChangeDebounced.flush?.(); }
+
+/** Cancel pending debounce — call after replacing the doc. */
+export function cancelPending() { fireChangeDebounced.cancel?.(); }
+
+// ============ COMMAND DISPATCH ============
+
+function runCommand(cmd) {
+  editorEl.focus();
+  // execCommand needs a live selection — restore one if focus was lost.
+  const sel = window.getSelection();
+  if (!sel.rangeCount) {
+    const r = document.createRange();
+    r.selectNodeContents(editorEl);
+    r.collapse(false);
+    sel.removeAllRanges();
+    sel.addRange(r);
+  }
+
+  switch (cmd) {
+    case 'bold':           document.execCommand('bold');                    break;
+    case 'italic':         document.execCommand('italic');                  break;
+    case 'underline':      document.execCommand('underline');               break;
+    case 'strike':         document.execCommand('strikeThrough');           break;
+    case 'h1':             toggleBlock('H1');                                break;
+    case 'h2':             toggleBlock('H2');                                break;
+    case 'paragraph':      toggleBlock('P');                                 break;
+    case 'blockquote':     toggleBlock('BLOCKQUOTE');                        break;
+    case 'bulletList':     document.execCommand('insertUnorderedList');     break;
+    case 'orderedList':    document.execCommand('insertOrderedList');       break;
+    case 'align-left':     document.execCommand('justifyLeft');             break;
+    case 'align-center':   document.execCommand('justifyCenter');           break;
+    case 'align-right':    document.execCommand('justifyRight');            break;
+    case 'align-justify':  document.execCommand('justifyFull');             break;
+    case 'undo':           document.execCommand('undo');                    break;
+    case 'redo':           document.execCommand('redo');                    break;
+    case 'link':           promptLink();                                    break;
+    case 'image':          promptImage();                                   break;
+    case 'table':          insertTable(3, 3);                                break;
+    case 'scenebreak':     insertSceneBreak();                              break;
+    case 'find':           openFindBar();                                   break;
+  }
+  fireChange();
+  refreshToolbar();
 }
 
-/** Cancel any pending debounce — call after replacing the doc. */
-export function cancelPending() {
-  fireChangeDebounced.cancel?.();
+/** Toggle a block-level format on the current paragraph. P is the default. */
+function toggleBlock(tag) {
+  // formatBlock is the most reliable way; it round-trips through native undo.
+  document.execCommand('formatBlock', false, tag);
 }
 
-// ============ TOOLBAR HELPERS ============
+// ============ LINK ============
 
-function refreshWordCount(html) {
-  if (!editor) return;
-  const s = stats(html ?? editor.getHTML());
-  const wc = document.getElementById('chapter-word-count');
-  const rt = document.getElementById('chapter-reading-time');
-  if (wc) wc.textContent = s.words;
-  if (rt) rt.textContent = s.readingLabel;
+function promptLink() {
+  const sel = window.getSelection();
+  const range = sel.rangeCount ? sel.getRangeAt(0) : null;
+  // If no selection, ask for the link text first.
+  let text = range && !range.collapsed ? range.toString() : '';
+  if (!text) {
+    text = window.prompt('Link text:') || '';
+    if (!text) return;
+  }
+  const url = window.prompt('Link URL:', 'https://');
+  if (!url) return;
+  const safe = /^(https?:|mailto:)/i.test(url) ? url : `https://${url}`;
+  if (range && !range.collapsed) {
+    document.execCommand('createLink', false, safe);
+    // Set rel/target on the new <a>.
+    setTimeout(() => {
+      editorEl.querySelectorAll('a[href]').forEach(a => {
+        if (a.getAttribute('href') === safe && !a.target) {
+          a.target = '_blank';
+          a.rel = 'noopener noreferrer';
+        }
+      });
+    }, 0);
+  } else {
+    const html = `<a href="${escapeHtml(safe)}" target="_blank" rel="noopener noreferrer">${escapeHtml(text)}</a>`;
+    document.execCommand('insertHTML', false, html);
+  }
 }
+
+// ============ IMAGE ============
+
+function promptImage() {
+  const choice = window.prompt('Paste an image URL, or leave blank to upload from your computer:');
+  if (choice === null) return;
+  const url = (choice || '').trim();
+  if (url) {
+    if (!/^https?:\/\//i.test(url)) { alert('URL must start with http(s)://'); return; }
+    insertImageDataUrl(url, '');
+    return;
+  }
+  const inp = document.createElement('input');
+  inp.type = 'file';
+  inp.accept = 'image/png,image/jpeg,image/gif,image/webp';
+  inp.onchange = async () => {
+    const f = inp.files?.[0];
+    if (!f) return;
+    if (f.size > 5 * 1024 * 1024 &&
+        !confirm(`That image is ${(f.size / 1024 / 1024).toFixed(1)} MB. Embedding large images bloats your book file. Continue?`)) {
+      return;
+    }
+    const src = await readFileAsDataUrl(f);
+    insertImageDataUrl(src, f.name);
+  };
+  inp.click();
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = reject;
+    r.readAsDataURL(file);
+  });
+}
+
+function insertImageDataUrl(src, alt) {
+  // Wrap in a centered figure block so the page layout doesn't break.
+  const html =
+    `<figure contenteditable="false" style="text-align:center;">` +
+    `<img src="${escapeHtml(src)}" alt="${escapeHtml(alt || '')}">` +
+    `</figure><p><br></p>`;
+  document.execCommand('insertHTML', false, html);
+  fireChange();
+}
+
+// ============ TABLE ============
+
+function insertTable(rows, cols) {
+  let html = '<table class="editor-table"><thead><tr>';
+  for (let c = 0; c < cols; c++) html += `<th>Col ${c + 1}</th>`;
+  html += '</tr></thead><tbody>';
+  for (let r = 0; r < rows - 1; r++) {
+    html += '<tr>';
+    for (let c = 0; c < cols; c++) html += '<td>&nbsp;</td>';
+    html += '</tr>';
+  }
+  html += '</tbody></table><p><br></p>';
+  document.execCommand('insertHTML', false, html);
+}
+
+// ============ SCENE BREAK ============
+
+function insertSceneBreak() {
+  document.execCommand('insertHTML', false, '<p class="scene-break" contenteditable="false"></p><p><br></p>');
+}
+
+// ============ DROP CARET POSITIONING ============
+
+function moveCaretToDropPoint(e) {
+  let range = null;
+  if (document.caretRangeFromPoint) {
+    range = document.caretRangeFromPoint(e.clientX, e.clientY);
+  } else if (document.caretPositionFromPoint) {
+    const pos = document.caretPositionFromPoint(e.clientX, e.clientY);
+    if (pos) {
+      range = document.createRange();
+      range.setStart(pos.offsetNode, pos.offset);
+      range.collapse(true);
+    }
+  }
+  if (range) {
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
+}
+
+// ============ NORMALIZATION ============
+
+/** Make sure the editor's direct children are block-level. Wrap stray nodes. */
+function normalizeRoot() {
+  const blockTags = new Set(['P','H1','H2','H3','H4','BLOCKQUOTE','UL','OL','TABLE','FIGURE','PRE']);
+  for (const node of [...editorEl.childNodes]) {
+    if (node.nodeType === 1 && blockTags.has(node.tagName)) continue;
+    if (node.nodeType === 3 && !node.textContent.trim()) {
+      editorEl.removeChild(node);
+      continue;
+    }
+    // Skip if the caret is currently in this node (would steal focus).
+    const sel = window.getSelection();
+    if (sel?.rangeCount && node.contains(sel.anchorNode)) continue;
+    const p = document.createElement('p');
+    node.replaceWith(p);
+    p.appendChild(node);
+  }
+}
+
+// ============ TOOLBAR STATE ============
 
 function refreshToolbar() {
-  if (!editor || !toolbarEl) return;
+  if (!toolbarEl) return;
   const checks = {
-    bold:        () => editor.isActive('bold'),
-    italic:      () => editor.isActive('italic'),
-    underline:   () => editor.isActive('underline'),
-    strike:      () => editor.isActive('strike'),
-    h1:          () => editor.isActive('heading', { level: 1 }),
-    h2:          () => editor.isActive('heading', { level: 2 }),
-    blockquote:  () => editor.isActive('blockquote'),
-    paragraph:   () => editor.isActive('paragraph'),
-    bulletList:  () => editor.isActive('bulletList'),
-    orderedList: () => editor.isActive('orderedList'),
-    link:        () => editor.isActive('link'),
-    'align-left':    () => editor.isActive({ textAlign: 'left' }),
-    'align-center':  () => editor.isActive({ textAlign: 'center' }),
-    'align-right':   () => editor.isActive({ textAlign: 'right' }),
-    'align-justify': () => editor.isActive({ textAlign: 'justify' }),
+    bold:        () => safeQuery('bold'),
+    italic:      () => safeQuery('italic'),
+    underline:   () => safeQuery('underline'),
+    strike:      () => safeQuery('strikeThrough'),
+    h1:          () => isBlock('H1'),
+    h2:          () => isBlock('H2'),
+    paragraph:   () => isBlock('P'),
+    blockquote:  () => isBlock('BLOCKQUOTE'),
+    bulletList:  () => safeQuery('insertUnorderedList'),
+    orderedList: () => safeQuery('insertOrderedList'),
+    'align-left':    () => safeQuery('justifyLeft'),
+    'align-center':  () => safeQuery('justifyCenter'),
+    'align-right':   () => safeQuery('justifyRight'),
+    'align-justify': () => safeQuery('justifyFull'),
   };
   toolbarEl.querySelectorAll('.tb-btn').forEach(btn => {
     const cmd = btn.dataset.cmd;
@@ -252,86 +412,41 @@ function refreshToolbar() {
   });
 }
 
-function runCommand(cmd, btn) {
-  if (!editor) return;
-  const C = editor.chain().focus();
-  switch (cmd) {
-    case 'bold':            return C.toggleBold().run();
-    case 'italic':          return C.toggleItalic().run();
-    case 'underline':       return C.toggleUnderline().run();
-    case 'strike':          return C.toggleStrike().run();
-    case 'h1':              return C.toggleHeading({ level: 1 }).run();
-    case 'h2':              return C.toggleHeading({ level: 2 }).run();
-    case 'blockquote':      return C.toggleBlockquote().run();
-    case 'paragraph':       return C.setParagraph().run();
-    case 'bulletList':      return C.toggleBulletList().run();
-    case 'orderedList':     return C.toggleOrderedList().run();
-    case 'align-left':      return C.setTextAlign('left').run();
-    case 'align-center':    return C.setTextAlign('center').run();
-    case 'align-right':     return C.setTextAlign('right').run();
-    case 'align-justify':   return C.setTextAlign('justify').run();
-    case 'undo':            return C.undo().run();
-    case 'redo':            return C.redo().run();
-    case 'scenebreak':      return C.insertSceneBreak().run();
-    case 'link':            return promptLink();
-    case 'image':           return promptImage();
-    case 'table':           return C.insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run();
-    case 'find':            return openFindBar();
-  }
+function safeQuery(name) {
+  try { return document.queryCommandState(name); } catch { return false; }
 }
 
-function promptLink() {
-  const prev = editor.getAttributes('link').href || '';
-  const url = window.prompt('Link URL (leave empty to remove):', prev);
-  if (url === null) return;
-  if (!url) {
-    editor.chain().focus().extendMarkRange('link').unsetLink().run();
-    return;
+function isBlock(tag) {
+  const sel = window.getSelection();
+  if (!sel.rangeCount) return false;
+  let n = sel.anchorNode;
+  while (n && n !== editorEl) {
+    if (n.nodeType === 1 && n.tagName === tag) return true;
+    n = n.parentNode;
   }
-  // Basic safety: only http(s) and mailto.
-  const safe = /^(https?:|mailto:)/i.test(url) ? url : `https://${url}`;
-  editor.chain().focus().extendMarkRange('link').setLink({ href: safe }).run();
+  return false;
 }
 
-/**
- * Prompt for an image. Two paths: paste a URL or upload from disk.
- * On disk uploads, we read as base64 so the image embeds in the doc and
- * survives Drive sync without needing a separate file store.
- */
-function promptImage() {
-  const choice = window.prompt('Paste an image URL, or leave blank to upload from your computer:');
-  if (choice === null) return;
-  const url = (choice || '').trim();
-  if (url) {
-    if (!/^https?:\/\//i.test(url)) {
-      alert('Image URL must start with http(s)://');
-      return;
-    }
-    editor.chain().focus().setImage({ src: url }).run();
-    return;
-  }
-  // No URL → file picker.
-  const inp = document.createElement('input');
-  inp.type = 'file';
-  inp.accept = 'image/png,image/jpeg,image/gif,image/webp';
-  inp.onchange = () => {
-    const f = inp.files?.[0];
-    if (!f) return;
-    if (f.size > 5 * 1024 * 1024) {
-      if (!confirm(`That image is ${(f.size / 1024 / 1024).toFixed(1)} MB. Embedding large images bloats your book file. Continue?`)) return;
-    }
-    const r = new FileReader();
-    r.onload = () => {
-      editor.chain().focus().setImage({ src: r.result, alt: f.name }).run();
-    };
-    r.readAsDataURL(f);
-  };
-  inp.click();
+function refreshWordCount(html) {
+  if (!editorEl) return;
+  const s = stats(html ?? editorEl.innerHTML);
+  const wc = document.getElementById('chapter-word-count');
+  const rt = document.getElementById('chapter-reading-time');
+  if (wc) wc.textContent = s.words;
+  if (rt) rt.textContent = s.readingLabel;
 }
 
-// ============ FIND / REPLACE (per-chapter) ============
+// Tell the world the chapter outline has changed (TOC panel listens).
+function notifyTocDirty() {
+  window.dispatchEvent(new CustomEvent('book:toc-dirty'));
+}
+
+// ============ FIND / REPLACE ============
 
 let findBar = null;
+let findMatches = [];   // [{from: Range start info, to: ...}]
+let findIdx = -1;
+let lastQuery = '';
 
 function openFindBar() {
   if (!findBar) {
@@ -343,58 +458,76 @@ function openFindBar() {
     findBar.querySelector('[data-find=replace]')?.addEventListener('click', findReplaceOne);
     findBar.querySelector('[data-find=replace-all]')?.addEventListener('click', findReplaceAll);
     findBar.querySelector('input[name=q]')?.addEventListener('input', findReset);
+    findBar.querySelector('input[name=q]')?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); findStep(e.shiftKey ? -1 : +1); }
+      if (e.key === 'Escape') { e.preventDefault(); closeFindBar(); }
+    });
   }
   findBar.hidden = false;
   findBar.querySelector('input[name=q]')?.focus();
+  findBar.querySelector('input[name=q]')?.select();
 }
 
 function closeFindBar() {
   if (findBar) findBar.hidden = true;
-  editor?.commands.focus();
+  editorEl?.focus();
 }
 
-let findMatches = [];
-let findIdx = -1;
+function findReset() { findMatches = []; findIdx = -1; lastQuery = ''; }
 
 function collectMatches(query) {
-  if (!editor || !query) return [];
+  const q = (query || '').toLowerCase();
+  if (!q) return [];
   const out = [];
-  const re = new RegExp(escapeRegex(query), 'gi');
-  editor.state.doc.descendants((node, pos) => {
-    if (!node.isText) return;
-    let m;
-    while ((m = re.exec(node.text || '')) !== null) {
-      out.push({ from: pos + m.index, to: pos + m.index + m[0].length });
+  const walker = document.createTreeWalker(editorEl, NodeFilter.SHOW_TEXT, null);
+  let node;
+  while ((node = walker.nextNode())) {
+    const text = node.nodeValue.toLowerCase();
+    let idx = 0;
+    while ((idx = text.indexOf(q, idx)) !== -1) {
+      out.push({ node, start: idx, end: idx + q.length });
+      idx += q.length;
     }
-    return true;
-  });
+  }
   return out;
-}
-
-function findReset() {
-  findIdx = -1;
-  findMatches = [];
 }
 
 function findStep(dir) {
   const q = findBar?.querySelector('input[name=q]')?.value || '';
   if (!q) return;
-  if (!findMatches.length) findMatches = collectMatches(q);
+  if (q !== lastQuery) {
+    findMatches = collectMatches(q);
+    findIdx = -1;
+    lastQuery = q;
+  }
   if (!findMatches.length) return;
   findIdx = (findIdx + dir + findMatches.length) % findMatches.length;
   const m = findMatches[findIdx];
-  editor.chain().focus().setTextSelection({ from: m.from, to: m.to }).scrollIntoView().run();
+  const range = document.createRange();
+  range.setStart(m.node, m.start);
+  range.setEnd(m.node, m.end);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+  // Scroll into view.
+  const rect = range.getBoundingClientRect();
+  const wrap = document.querySelector('.book-page-wrap');
+  if (wrap && (rect.top < 80 || rect.bottom > wrap.clientHeight - 80)) {
+    wrap.scrollBy({ top: rect.top - 200, behavior: 'smooth' });
+  }
 }
 
 function findReplaceOne() {
   const q = findBar?.querySelector('input[name=q]')?.value || '';
   const r = findBar?.querySelector('input[name=r]')?.value || '';
   if (!q) return;
-  // Replace currently-selected match (or step to first) and advance.
-  const sel = editor.state.selection;
-  const selText = editor.state.doc.textBetween(sel.from, sel.to);
-  if (selText.toLowerCase() === q.toLowerCase()) {
-    editor.chain().focus().insertContentAt({ from: sel.from, to: sel.to }, r).run();
+  const sel = window.getSelection();
+  const selText = sel.toString();
+  if (selText.toLowerCase() === q.toLowerCase() && sel.rangeCount) {
+    const range = sel.getRangeAt(0);
+    range.deleteContents();
+    range.insertNode(document.createTextNode(r));
+    fireChange();
     findReset();
     findStep(+1);
   } else {
@@ -406,10 +539,19 @@ function findReplaceAll() {
   const q = findBar?.querySelector('input[name=q]')?.value || '';
   const r = findBar?.querySelector('input[name=r]')?.value || '';
   if (!q) return;
-  const matches = collectMatches(q).reverse();   // reverse so positions stay valid
-  let chain = editor.chain().focus();
-  for (const m of matches) chain = chain.insertContentAt({ from: m.from, to: m.to }, r);
-  chain.run();
+  // Walk text nodes, replacing in-place. Simpler than range-based for "replace all".
+  const walker = document.createTreeWalker(editorEl, NodeFilter.SHOW_TEXT, null);
+  const re = new RegExp(escapeRegex(q), 'gi');
+  const targets = [];
+  let node;
+  while ((node = walker.nextNode())) {
+    if (re.test(node.nodeValue)) targets.push(node);
+    re.lastIndex = 0;
+  }
+  for (const t of targets) {
+    t.nodeValue = t.nodeValue.replace(new RegExp(escapeRegex(q), 'gi'), r);
+  }
+  fireChange();
   findReset();
 }
 
