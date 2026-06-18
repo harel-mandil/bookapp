@@ -1,0 +1,297 @@
+/* ============================================================
+   tokens.css — Design tokens (colors, type, spacing, radius, shadow)
+   Loaded FIRST so every later rule can reference these variables.
+
+   Two layers:
+     1. PRIMITIVES — the raw palette (--gray-50, --orange-500, …).
+        Don't reference these in components; use semantic tokens.
+     2. SEMANTIC   — what components reference (--bg, --text, --accent, …).
+        These flip per theme.
+
+   Theming:
+     :root  /  [data-theme="light"]   → light tokens
+     [data-theme="dark"]              → dark tokens
+     prefers-color-scheme: dark       → dark tokens (when no explicit attr)
+   ============================================================ */
+
+:root {
+  /* ---------- PRIMITIVES — palette ---------- */
+  /* Warm grays (paper / chrome). */
+  --gray-25:  #fdfcf8;
+  --gray-50:  #f5f3ee;
+  --gray-100: #ede9df;
+  --gray-150: #e5e1d8;
+  --gray-200: #d8d3c5;
+  --gray-300: #b9b3a4;
+  --gray-400: #8e8878;
+  --gray-500: #6b6b6b;
+  --gray-600: #4a4a4a;
+  --gray-700: #333333;
+  --gray-800: #1f1f1c;
+  --gray-900: #161613;
+  --gray-950: #0d0d0b;
+
+  /* Brand orange (accent). */
+  --orange-100: #ffedd5;
+  --orange-200: #fed7aa;
+  --orange-300: #fdba74;
+  --orange-400: #fb923c;
+  --orange-500: #f97316;
+  --orange-600: #c2410c;
+  --orange-700: #9a3412;
+
+  /* Functional. */
+  --green-500:  #16a34a;
+  --green-700:  #065f46;
+  --amber-500:  #ca8a04;
+  --amber-700:  #92400e;
+  --red-500:    #dc2626;
+
+  /* ---------- TYPE SCALE ---------- */
+  --font-xs:   12px;
+  --font-sm:   13px;
+  --font-base: 15px;
+  --font-lg:   17px;
+  --font-xl:   22px;
+  --font-2xl:  28px;
+
+  --font-ui:    -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', system-ui, sans-serif;
+  --font-book:  'Iowan Old Style', 'Hoefler Text', 'Cambria', 'Georgia', serif;
+  --font-mono:  'SF Mono', Menlo, Consolas, monospace;
+
+  --line-tight: 1.35;
+  --line-base:  1.55;
+  --line-book:  1.62;
+
+  /* ---------- SPACING ---------- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+
+  /* ---------- RADIUS ---------- */
+  --radius-sm: 4px;
+  --radius:    8px;
+  --radius-lg: 12px;
+
+  /* ---------- LAYOUT ---------- */
+  --sidebar-width: 260px;
+
+  /* ---------- PAGE METRICS (visual pages) ---------- */
+  --page-w: 6in;
+  --page-h: 9in;
+  --page-margin: 0.75in;
+  --page-gap: 28px;          /* vertical gap between pages on screen */
+
+  /* User-tunable book typography. JS may override these via meta. */
+  --book-font-face: var(--font-book);
+  --book-font-size: 15px;
+  --book-line-height: 1.62;
+
+  /* ---------- SIDEBAR (always dark; same in both themes) ---------- */
+  --sidebar-bg:        #1a1a1a;
+  --sidebar-bg-hover:  #2a2a2a;
+  --sidebar-bg-active: #3a3a3a;
+  --sidebar-text:      #e8e8e8;
+  --sidebar-text-muted:#9a9a9a;
+  --sidebar-border:    #000000;
+  --sidebar-divider:   #2a2a2a;
+}
+
+/* ===================== LIGHT THEME ===================== */
+:root,
+[data-theme="light"] {
+  --bg:           var(--gray-50);
+  --bg-card:      #ffffff;
+  --bg-subtle:    #faf8f4;
+  --bg-hover:     #f1ede4;
+
+  --text:         #1a1a1a;
+  --text-muted:   #6b6b6b;
+  --text-subtle:  #888888;
+  --text-strong:  #111111;
+  --text-placeholder: #c4bdae;
+
+  --border:       var(--gray-150);
+  --border-subtle:#eae6dd;
+  --border-soft:  #d4cfc1;
+
+  --accent:       var(--orange-600);
+  --accent-soft:  var(--orange-200);
+  --accent-tint:  rgba(194, 65, 12, 0.08);
+  --accent-on-fg: #ffffff;
+
+  --success:      var(--green-500);
+  --warning:      var(--amber-500);
+  --danger:       var(--red-500);
+
+  /* Status pill — light backgrounds with strong text. */
+  --pill-outlined-bg: #f0eee8;
+  --pill-outlined-fg: #6b6b6b;
+  --pill-drafting-bg: #fef3c7;
+  --pill-drafting-fg: var(--amber-700);
+  --pill-done-bg:     #d1fae5;
+  --pill-done-fg:     var(--green-700);
+
+  /* Book paper. */
+  --paper:        #fefefb;
+  --paper-text:   #1a1a1a;
+  --paper-rule:   #eae6dd;
+  --paper-quiet:  #888888;
+  --paper-quote-text: #555555;
+  --paper-quote-rule: #d4cfc1;
+  --paper-h2:     #444444;
+
+  --table-head-bg: #f7f3ec;
+  --table-cell-rule: #d4cfc1;
+  --selected-cell: rgba(194, 65, 12, 0.14);
+
+  --import-warn-bg: #fffbeb;
+  --import-checked-bg: #fff7ed;
+  --import-danger-bg:  #fef2f2;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow:    0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 10px 30px rgba(0, 0, 0, 0.12);
+  --shadow-page: 0 4px 24px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.06);
+
+  --overlay-bg: rgba(0, 0, 0, 0.5);
+
+  /* find-bar */
+  --findbar-bg: #fffaf0;
+  --findbar-input-bg: #ffffff;
+
+  color-scheme: light;
+}
+
+/* ===================== DARK THEME ===================== */
+[data-theme="dark"] {
+  --bg:           #15140f;
+  --bg-card:      #1f1d18;
+  --bg-subtle:    #25221c;
+  --bg-hover:     #2a2722;
+
+  --text:         #ece7da;
+  --text-muted:   #a39e90;
+  --text-subtle:  #7c7668;
+  --text-strong:  #ffffff;
+  --text-placeholder: #5a5546;
+
+  --border:       #2f2c25;
+  --border-subtle:#2a2721;
+  --border-soft:  #3a352c;
+
+  --accent:       #f59e6b;            /* desaturated orange — readable on dark */
+  --accent-soft:  #5a3c25;
+  --accent-tint:  rgba(245, 158, 107, 0.10);
+  --accent-on-fg: #181513;
+
+  --success:      #4ade80;
+  --warning:      #fcd34d;
+  --danger:       #f87171;
+
+  --pill-outlined-bg: #2b2823;
+  --pill-outlined-fg: #a39e90;
+  --pill-drafting-bg: #3d2e1a;
+  --pill-drafting-fg: #fbbf24;
+  --pill-done-bg:     #15321f;
+  --pill-done-fg:     #6ee7b7;
+
+  /* Book paper — warm graphite, not pure black. */
+  --paper:        #1f1f1c;
+  --paper-text:   #ece7da;
+  --paper-rule:   #34302a;
+  --paper-quiet:  #8a8472;
+  --paper-quote-text: #b4ad99;
+  --paper-quote-rule: #4a4438;
+  --paper-h2:     #c0bbab;
+
+  --table-head-bg: #2a2620;
+  --table-cell-rule: #3a352c;
+  --selected-cell: rgba(245, 158, 107, 0.18);
+
+  --import-warn-bg: #2c2310;
+  --import-checked-bg: #3a2a17;
+  --import-danger-bg:  #38181b;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow:    0 1px 3px rgba(0, 0, 0, 0.5), 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.45);
+  --shadow-lg: 0 10px 30px rgba(0, 0, 0, 0.6);
+  --shadow-page: 0 6px 28px rgba(0, 0, 0, 0.55), 0 2px 4px rgba(0, 0, 0, 0.45);
+
+  --overlay-bg: rgba(0, 0, 0, 0.7);
+
+  --findbar-bg: #2a241b;
+  --findbar-input-bg: #1a1815;
+
+  color-scheme: dark;
+}
+
+/* When the user has not set data-theme, follow the OS preference. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    --bg:           #15140f;
+    --bg-card:      #1f1d18;
+    --bg-subtle:    #25221c;
+    --bg-hover:     #2a2722;
+
+    --text:         #ece7da;
+    --text-muted:   #a39e90;
+    --text-subtle:  #7c7668;
+    --text-strong:  #ffffff;
+    --text-placeholder: #5a5546;
+
+    --border:       #2f2c25;
+    --border-subtle:#2a2721;
+    --border-soft:  #3a352c;
+
+    --accent:       #f59e6b;
+    --accent-soft:  #5a3c25;
+    --accent-tint:  rgba(245, 158, 107, 0.10);
+    --accent-on-fg: #181513;
+
+    --success:      #4ade80;
+    --warning:      #fcd34d;
+    --danger:       #f87171;
+
+    --pill-outlined-bg: #2b2823;
+    --pill-outlined-fg: #a39e90;
+    --pill-drafting-bg: #3d2e1a;
+    --pill-drafting-fg: #fbbf24;
+    --pill-done-bg:     #15321f;
+    --pill-done-fg:     #6ee7b7;
+
+    --paper:        #1f1f1c;
+    --paper-text:   #ece7da;
+    --paper-rule:   #34302a;
+    --paper-quiet:  #8a8472;
+    --paper-quote-text: #b4ad99;
+    --paper-quote-rule: #4a4438;
+    --paper-h2:     #c0bbab;
+
+    --table-head-bg: #2a2620;
+    --table-cell-rule: #3a352c;
+    --selected-cell: rgba(245, 158, 107, 0.18);
+
+    --import-warn-bg: #2c2310;
+    --import-checked-bg: #3a2a17;
+    --import-danger-bg:  #38181b;
+
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow:    0 1px 3px rgba(0, 0, 0, 0.5), 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.45);
+    --shadow-lg: 0 10px 30px rgba(0, 0, 0, 0.6);
+    --shadow-page: 0 6px 28px rgba(0, 0, 0, 0.55), 0 2px 4px rgba(0, 0, 0, 0.45);
+
+    --overlay-bg: rgba(0, 0, 0, 0.7);
+    --findbar-bg: #2a241b;
+    --findbar-input-bg: #1a1815;
+
+    color-scheme: dark;
+  }
+}

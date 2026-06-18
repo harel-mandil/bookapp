@@ -2,16 +2,16 @@
 // main.js — entry point. Wires all modules + the UI.
 //
 // Boot sequence:
-//   1. Open IndexedDB.
-//   2. Load the live document (or create a starter one).
-//   3. Mount the editor.
-//   4. Set up sidebar + view routing.
-//   5. Initialize sync, and if a Drive client ID is configured,
-//      initialize auth in the background (NOT auto-popup — user clicks).
-//   6. Set up auto-save: editor → IndexedDB (fast) → Drive (slower).
-//   7. Set up snapshot scheduler.
-//   8. Render dashboard.
-//   9. Attach beforeunload / pagehide handlers.
+//   1. Theme (so dark mode is applied before first paint)
+//   2. Open IndexedDB.
+//   3. Load doc (or starter).
+//   4. Mount editor + paginator.
+//   5. Sidebar + view routing.
+//   6. Sync init.
+//   7. Snapshot scheduler.
+//   8. Boot all of: search, sprint, focus, notes, typography, shortcuts.
+//   9. Render dashboard.
+//  10. Persistence-on-hide handlers.
 // ============================================================
 
 import * as db from './db.js';
@@ -19,31 +19,58 @@ import * as auth from './auth.js';
 import * as sync from './sync.js';
 import * as snapshots from './snapshots.js';
 import * as exportLib from './export.js';
+import * as theme from './theme.js';
+import * as paginate from './paginate.js';
+import * as search from './search.js';
+import * as sprint from './sprint.js';
+import * as focus from './focus.js';
+import * as notes from './notes.js';
+import { setSmartTypography } from './typography.js';
+import { exportBookEpub, exportBookMarkdown } from './epub.js';
 import { publishCurrentVersion } from './publish.js';
 import { docxBlobToHtml, splitHtmlByH1 } from './import.js';
-import { mountEditor, loadChapter, snapshotChapter, flushPending as flushEditor, cancelPending as cancelEditor } from './editor.js';
+import {
+  mountEditor, loadChapter, snapshotChapter, getEditorElement,
+  flushPending as flushEditor, cancelPending as cancelEditor,
+} from './editor.js';
 import { sanitizeHtml } from './format.js';
 import { renderDashboard } from './dashboard.js';
 import { logEvent, checkWordMilestones, checkReEntry, renderTimeline } from './journey.js';
 import { stats, totalStats, wordsOf } from './stats.js';
-import { uid, todayKey, toast, fmtTime, debounce, escapeHtml, isoForFilename } from './utils.js';
+import { uid, todayKey, toast, fmtTime, debounce, escapeHtml } from './utils.js';
+import { replaceInHtml } from './search.js';
 
 // ============ APP STATE ============
 
 const state = {
-  doc: null,                    // { id, title, chapters: [], updatedAt, ... }
+  doc: null,
   activeChapterId: null,
   activeView: 'dashboard',
-  prevTotalWords: 0,            // for milestone tracking
-  historyFilter: 'all',         // 'all' | 'auto' | 'published'
+  prevTotalWords: 0,
+  historyFilter: 'all',
+  scrollByChapter: {},   // chapterId → wrap.scrollTop (restore on switch)
+};
+
+// Page-size table (width × height in CSS in/cm).
+const PAGE_SIZES = {
+  '6x9':    { w: '6in',     h: '9in',     margin: '0.75in' },
+  '5x8':    { w: '5in',     h: '8in',     margin: '0.6in'  },
+  'letter': { w: '8.5in',   h: '11in',    margin: '1in'    },
+  'a4':     { w: '210mm',   h: '297mm',   margin: '20mm'   },
+  'a5':     { w: '148mm',   h: '210mm',   margin: '15mm'   },
+};
+const FONT_FACES = {
+  serif: `'Iowan Old Style','Hoefler Text','Cambria','Georgia',serif`,
+  sans:  `-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', system-ui, sans-serif`,
+  mono:  `'SF Mono', Menlo, Consolas, monospace`,
 };
 
 // ============ BOOT ============
 
 async function boot() {
+  await theme.initTheme();
   await db.persistStorage().catch(() => {});
 
-  // Load doc (or create a starter)
   let doc = await db.docLoad();
   if (!doc) {
     doc = createStarterDoc();
@@ -53,10 +80,13 @@ async function boot() {
   state.prevTotalWords = totalStats(doc.chapters || []).words;
   state.activeChapterId = doc.chapters[0]?.id || null;
 
-  // Mount the editor (vanilla contenteditable — no external deps)
+  // Apply the user's page format + typography preferences BEFORE editor mount,
+  // so the first layout uses the right metrics.
+  await applyTypographyFromMeta();
+
   await mountEditor({
     editorEl: document.getElementById('editor'),
-    titleEl: document.getElementById('chapter-title-input'),
+    titleEl:  document.getElementById('chapter-title-input'),
     toolbarEl: document.querySelector('.editor-toolbar'),
     onChange: handleEditorChange,
   });
@@ -66,72 +96,55 @@ async function boot() {
     if (c) loadChapter(c);
   }
 
-  // Page header reflects book + chapter title
   refreshPageHeader();
 
-  // Sidebar + nav
   setupNav();
   renderSidebarChapters();
   loadSettingsForm();
   refreshSyncStatus('local');
 
-  // Sync init
   await sync.initSync();
   sync.onSyncStatus(refreshSyncStatus);
 
-  // Snapshot scheduler
   await snapshots.initSnapshots({
     getDoc: () => state.doc,
     onSnap: () => { if (state.activeView === 'history') renderHistory(); },
   });
 
-  // Auth init in background if client ID exists
   const clientId = await db.metaGet('googleClientId');
   if (clientId) {
-    auth.initAuth(clientId).then(() => {
-      // Try silent token refresh — quietly succeeds if user previously consented in this browser session.
-      // We DON'T popup automatically; the user clicks "Connect" to start.
-      updateConnectButton();
-    }).catch(e => console.warn('auth init failed', e));
+    auth.initAuth(clientId).then(updateConnectButton).catch(e => console.warn('auth init failed', e));
   }
   updateConnectButton();
 
-  // Dashboard
-  await renderDashboard(state.doc);
+  await renderDashboard(state.doc, { onGoalChange: () => renderSidebarChapters() });
 
-  // Journey re-entry check
   checkReEntry().catch(() => {});
 
-  // Persistence safety: flush before tab hide.
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden') {
-      flushAll();
-    }
+    if (document.visibilityState === 'hidden') flushAll();
   });
   window.addEventListener('pagehide', () => flushAll());
 
-  // Wire toast for errors
   window.addEventListener('auth:error', (e) => {
     toast('Drive auth error: ' + (e.detail?.type || 'unknown'), 'error');
   });
-
-  // When sync detects a 401, the Connect button comes back to life.
   window.addEventListener('auth:needs-reconnect', () => {
     updateConnectButton();
     toast('Drive disconnected. Click "Connect Google Drive" to reconnect.', 'error', 5000);
   });
 
-  // Diagnostics panel
+  // Diagnostics
   document.getElementById('diagnostics-btn').addEventListener('click', openDiagnostics);
   document.getElementById('diag-close').addEventListener('click', () => {
     document.getElementById('diag-overlay').hidden = true;
   });
   document.getElementById('diag-copy').addEventListener('click', copyDiagnostics);
 
-  // Connect Drive button (only one across the app)
+  // Drive
   document.getElementById('connect-drive-btn').addEventListener('click', onConnectDriveClick);
 
-  // Settings form actions
+  // Settings
   document.getElementById('save-client-id-btn').addEventListener('click', saveClientId);
   document.getElementById('edit-goal-btn').addEventListener('click', editDailyGoal);
   document.getElementById('reset-app-btn').addEventListener('click', resetEverything);
@@ -141,14 +154,13 @@ async function boot() {
   });
   document.getElementById('import-file-input').addEventListener('change', importJson);
 
-  // Mirror docx toggle (off by default).
   const mirrorEl = document.getElementById('setting-mirror-docx');
   if (mirrorEl) {
     mirrorEl.checked = !!(await db.metaGet('mirrorDocxEnabled', false));
     mirrorEl.addEventListener('change', async (e) => {
       await db.metaSet('mirrorDocxEnabled', e.target.checked);
       if (e.target.checked && auth.isAuthorized()) {
-        sync.markDirty(state.doc); // schedules first docx push
+        sync.markDirty(state.doc);
         toast('Drive will receive book.docx within ~30 s.', 'success');
       } else if (e.target.checked) {
         toast('Connect Google Drive first — mirror is enabled but inactive.', 'warning', 4000);
@@ -158,17 +170,16 @@ async function boot() {
     });
   }
 
-  // Export dropdown menu
   setupExportMenu();
-  // Publish version button + modal
   setupPublishFlow();
 
-  // Settings live-update wiring
+  // Live book metadata wiring
   document.getElementById('setting-book-title').addEventListener('input', e => {
     state.doc.title = e.target.value;
     document.getElementById('book-title-display').textContent = state.doc.title || 'Untitled Book';
     document.getElementById('page-header-book').textContent = (state.doc.title || '').toUpperCase();
     persistDocSoon();
+    paginate.refresh();
   });
   document.getElementById('setting-daily-goal').addEventListener('change', async (e) => {
     const v = Math.max(0, parseInt(e.target.value, 10) || 0);
@@ -182,15 +193,14 @@ async function boot() {
     await db.metaSet('deadline', e.target.value || null);
   });
 
-  // Add chapter
+  // Theme + typography settings
+  setupAppearanceSettings();
+
+  // Chapters
   document.getElementById('add-chapter-btn').addEventListener('click', addChapter);
-  // Add chapter from .docx (sidebar quick action — skips the modal, always one-chapter)
   setupQuickDocxImport();
-  // Settings → Import .docx (full modal with mode picker)
   setupSettingsDocxImport();
-  // Drag-and-drop .docx onto the chapters list
   setupChapterListDropZone();
-  // Left Table-of-Contents panel in the book view
   setupBookToc();
 
   // Ideas
@@ -199,38 +209,47 @@ async function boot() {
     if (e.key === 'Enter') addIdeaFromInput();
   });
 
-  // Listen for nav-to-chapter from dashboard table
+  // Dashboard nav
   window.addEventListener('nav:chapter', (e) => {
     setActiveChapter(e.detail.chapterId);
     setActiveView('book');
   });
 
-  // ⌘F / Ctrl+F — open the editor's find bar when the book view is active.
-  window.addEventListener('keydown', (e) => {
-    const isFind = (e.key === 'f' || e.key === 'F') && (e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey;
-    if (!isFind) return;
-    if (state.activeView !== 'book') return;
-    e.preventDefault();
-    const findBtn = document.querySelector('.tb-btn[data-cmd="find"]');
-    findBtn?.click();
+  // Cross-chapter find/replace + sprint + focus + notes + quick-open + kbd-help
+  setupSearch();
+  setupSprint();
+  await focus.initFocus();
+  await notes.initNotes();
+  setupQuickOpen();
+  setupKbdHelp();
+  setupTopbarShortcutButtons();
+
+  // Mount paginator (after editor + chapter loaded).
+  paginate.mountPaginator({
+    editorEl: getEditorElement(),
+    getBookTitle: () => state.doc.title || '',
+    getChapterTitle: () => {
+      const c = state.doc.chapters.find(c => c.id === state.activeChapterId);
+      return c?.title || '';
+    },
   });
+
+  // Restore scroll position when switching chapters
+  document.getElementById('book-page-wrap')?.addEventListener('scroll', () => {
+    if (!state.activeChapterId) return;
+    state.scrollByChapter[state.activeChapterId] = document.getElementById('book-page-wrap').scrollTop;
+  });
+
+  setupGlobalShortcuts();
 }
 
 // ============ DOC / EDITOR PLUMBING ============
 
-/**
- * Defensive sanitizer for any doc that wasn't created in-app this session.
- * Strips scripts / event handlers / dangerous URLs from chapter HTML.
- * Applied to: imported JSON files, restored snapshots, Drive-loaded docs.
- */
 function sanitizeDoc(doc) {
   if (!doc || !Array.isArray(doc.chapters)) return doc;
   return {
     ...doc,
-    chapters: doc.chapters.map(c => ({
-      ...c,
-      html: sanitizeHtml(c.html || ''),
-    })),
+    chapters: doc.chapters.map(c => ({ ...c, html: sanitizeHtml(c.html || '') })),
   };
 }
 
@@ -242,20 +261,17 @@ function createStarterDoc() {
     createdAt: Date.now(),
     updatedAt: Date.now(),
     revision: 1,
-    chapters: [
-      {
-        id: firstChId,
-        title: 'Chapter 1',
-        html: '<p><br></p>',
-        status: 'drafting',
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      },
-    ],
+    chapters: [{
+      id: firstChId,
+      title: 'Chapter 1',
+      html: '<p><br></p>',
+      status: 'drafting',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }],
   };
 }
 
-/** Editor change → update doc, persist locally, schedule Drive push. */
 function handleEditorChange(updatedChapter) {
   if (!state.activeChapterId) return;
   const idx = state.doc.chapters.findIndex(c => c.id === state.activeChapterId);
@@ -275,26 +291,22 @@ function handleEditorChange(updatedChapter) {
   const afterWords = wordsOf(state.doc.chapters[idx]);
   const wordDelta = afterWords - beforeWords;
 
-  // Update today's session
   updateTodaySession(wordDelta).catch(() => {});
 
-  // Milestones
   const newTotal = totalStats(state.doc.chapters).words;
   checkWordMilestones(newTotal, state.prevTotalWords).catch(() => {});
   state.prevTotalWords = newTotal;
 
-  // Reflect in sidebar
   renderSidebarChapters();
   scheduleTocRefresh();
 
-  // Reflect in page header chapter title
   document.getElementById('page-header-chapter').textContent = (updatedChapter.title || '').toUpperCase();
 
   persistDocSoon();
   snapshots.noteChange();
+  paginate.refresh();
 }
 
-/** Persist doc to IndexedDB (fast) + schedule Drive push (slower). */
 const persistDocSoon = debounce(async () => {
   showSaveIndicator('saving');
   try {
@@ -307,7 +319,6 @@ const persistDocSoon = debounce(async () => {
   }
 }, 350, { maxWait: 3000 });
 
-/** Updates today's session row with the most recent word delta. */
 async function updateTodaySession(wordDelta) {
   const date = todayKey();
   const existing = (await db.sessionGet(date)) || {
@@ -334,13 +345,23 @@ function setActiveView(view) {
   document.getElementById('view-title').textContent =
     { dashboard: 'Dashboard', book: 'The Book', journey: 'Journey', ideas: 'Ideas', history: 'Version History', settings: 'Settings' }[view] || view;
 
-  if (view === 'dashboard') renderDashboard(state.doc);
+  if (view === 'dashboard') renderDashboard(state.doc, { onGoalChange: () => renderSidebarChapters() });
   if (view === 'journey') renderTimeline();
   if (view === 'ideas') renderIdeas();
   if (view === 'history') renderHistory();
   if (view === 'settings') {
     loadSettingsForm();
     refreshStorageInfo();
+  }
+  if (view === 'book') {
+    // Restore scroll for the active chapter.
+    setTimeout(() => {
+      const wrap = document.getElementById('book-page-wrap');
+      if (wrap && state.activeChapterId && state.scrollByChapter[state.activeChapterId] != null) {
+        wrap.scrollTop = state.scrollByChapter[state.activeChapterId];
+      }
+      paginate.refresh();
+    }, 30);
   }
 }
 
@@ -350,7 +371,7 @@ function renderSidebarChapters() {
   ul.innerHTML = state.doc.chapters.map(c => {
     const isActive = c.id === state.activeChapterId;
     const status = c.status || 'drafting';
-    return `<li data-id="${escapeHtml(c.id)}" class="${isActive ? 'active' : ''}">
+    return `<li data-id="${escapeHtml(c.id)}" class="${isActive ? 'active' : ''}" draggable="true">
       <span class="chapter-status-dot ${status}"></span>
       <span class="chapter-name">${escapeHtml(c.title || 'Untitled')}</span>
       <span class="chapter-words">${wordsOf(c).toLocaleString()}</span>
@@ -361,16 +382,20 @@ function renderSidebarChapters() {
       setActiveChapter(li.dataset.id);
       setActiveView('book');
     });
+    setupChapterDrag(li);
   });
 }
 
 function setActiveChapter(id) {
   if (state.activeChapterId === id) return;
-  // CRITICAL: flush any pending editor debounce so the OUTGOING chapter's
-  // last keystrokes get captured before we swap (review fix C1).
   flushEditor();
-  // Snapshot the doc before switching (per snapshot rule §4.2.5).
   snapshots.forceSnapshot('chapter_switch').catch(() => {});
+
+  // Save scroll for outgoing chapter.
+  const wrap = document.getElementById('book-page-wrap');
+  if (wrap && state.activeChapterId) {
+    state.scrollByChapter[state.activeChapterId] = wrap.scrollTop;
+  }
 
   state.activeChapterId = id;
   const c = state.doc.chapters.find(ch => ch.id === id);
@@ -380,6 +405,11 @@ function setActiveChapter(id) {
   }
   renderSidebarChapters();
   renderBookToc();
+  // Restore scroll for incoming chapter.
+  setTimeout(() => {
+    if (wrap && state.scrollByChapter[id] != null) wrap.scrollTop = state.scrollByChapter[id];
+    paginate.refresh();
+  }, 50);
 }
 
 function refreshPageHeader() {
@@ -405,6 +435,60 @@ function addChapter() {
   persistDocSoon();
   logEvent('started_chapter', `Started "${ch.title}"`).catch(() => {});
   renderBookToc();
+}
+
+// ============ CHAPTER DRAG-REORDER ============
+
+let _dragSrcId = null;
+function setupChapterDrag(li) {
+  li.addEventListener('dragstart', (e) => {
+    _dragSrcId = li.dataset.id;
+    li.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'move';
+    // Prevent the docx-drop handler on the UL from kicking in.
+    e.dataTransfer.setData('text/x-bookapp-chapter', li.dataset.id);
+  });
+  li.addEventListener('dragend', () => {
+    _dragSrcId = null;
+    document.querySelectorAll('.chapters-list li').forEach(n => n.classList.remove('dragging', 'drop-above', 'drop-below'));
+  });
+  li.addEventListener('dragover', (e) => {
+    if (!_dragSrcId) return;
+    if (_dragSrcId === li.dataset.id) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    const r = li.getBoundingClientRect();
+    const before = (e.clientY - r.top) < r.height / 2;
+    li.classList.toggle('drop-above', before);
+    li.classList.toggle('drop-below', !before);
+  });
+  li.addEventListener('dragleave', () => li.classList.remove('drop-above', 'drop-below'));
+  li.addEventListener('drop', (e) => {
+    if (!_dragSrcId) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const targetId = li.dataset.id;
+    const r = li.getBoundingClientRect();
+    const before = (e.clientY - r.top) < r.height / 2;
+    reorderChapter(_dragSrcId, targetId, before);
+  });
+}
+
+function reorderChapter(srcId, targetId, before) {
+  if (srcId === targetId) return;
+  const arr = state.doc.chapters;
+  const srcIdx = arr.findIndex(c => c.id === srcId);
+  let dstIdx = arr.findIndex(c => c.id === targetId);
+  if (srcIdx < 0 || dstIdx < 0) return;
+  const [moved] = arr.splice(srcIdx, 1);
+  if (srcIdx < dstIdx) dstIdx--;
+  if (!before) dstIdx++;
+  arr.splice(dstIdx, 0, moved);
+  state.doc.updatedAt = Date.now();
+  persistDocSoon();
+  renderSidebarChapters();
+  renderBookToc();
+  if (state.activeView === 'dashboard') renderDashboard(state.doc);
 }
 
 // ============ IDEAS ============
@@ -451,7 +535,6 @@ async function renderHistory() {
   if (!ul) return;
   const all = (await db.snapshotsAll()).sort((a, b) => b.timestamp - a.timestamp);
 
-  // Render filter pills above the list (idempotent — replace any prior pill row).
   const host = ul.parentElement;
   let pillRow = host.querySelector('.history-filter');
   if (!pillRow) {
@@ -480,10 +563,7 @@ async function renderHistory() {
     return kind === state.historyFilter;
   });
 
-  if (!filtered.length) {
-    ul.innerHTML = `<li class="empty-state">No versions yet.</li>`;
-    return;
-  }
+  if (!filtered.length) { ul.innerHTML = `<li class="empty-state">No versions yet.</li>`; return; }
 
   ul.innerHTML = filtered.map(s => {
     const sign = s.wordDelta > 0 ? 'positive' : (s.wordDelta < 0 ? 'negative' : '');
@@ -515,15 +595,11 @@ async function restoreSnapshot(id) {
   const snap = await db.snapshotGet(id);
   if (!snap) return;
   if (!confirm(`Restore version from ${fmtTime(snap.timestamp)}? A new snapshot of your current state will be saved first, so this is reversible.`)) return;
-  // Save current as a snapshot first.
   await snapshots.forceSnapshot('pre_restore');
   cancelEditor();
-  // Sanitize on restore (defense in depth — snapshots are local but may have
-  // come from an imported doc that pre-dates the import-time sanitizer).
   state.doc = sanitizeDoc(JSON.parse(JSON.stringify(snap.doc)));
   state.doc.updatedAt = Date.now();
   await db.docSave(state.doc);
-  // Re-mount editor on the active chapter (or first).
   state.activeChapterId = state.doc.chapters[0]?.id || null;
   if (state.activeChapterId) {
     const c = state.doc.chapters.find(c => c.id === state.activeChapterId);
@@ -545,6 +621,61 @@ async function loadSettingsForm() {
   document.getElementById('setting-total-target').value = await db.metaGet('totalTarget', '');
   document.getElementById('setting-deadline').value = (await db.metaGet('deadline', '')) || '';
   document.getElementById('setting-client-id').value = (await db.metaGet('googleClientId', '')) || '';
+
+  // Theme + typography
+  const t = theme.getTheme();
+  document.querySelectorAll('input[name="theme"]').forEach(r => { r.checked = (r.value === t); });
+  document.getElementById('setting-page-size').value     = (await db.metaGet('pageSize', '6x9'));
+  document.getElementById('setting-font-face').value     = (await db.metaGet('fontFace', 'serif'));
+  document.getElementById('setting-font-size').value     = String(await db.metaGet('fontSize', 15));
+  document.getElementById('setting-line-height').value   = String(await db.metaGet('lineHeight', 1.62));
+  document.getElementById('setting-smart-typography').checked = !!(await db.metaGet('smartTypography', true));
+}
+
+function setupAppearanceSettings() {
+  document.querySelectorAll('input[name="theme"]').forEach(r => {
+    r.addEventListener('change', () => theme.setTheme(r.value));
+  });
+  document.getElementById('setting-page-size').addEventListener('change', async (e) => {
+    await db.metaSet('pageSize', e.target.value);
+    applyTypographyFromMeta();
+  });
+  document.getElementById('setting-font-face').addEventListener('change', async (e) => {
+    await db.metaSet('fontFace', e.target.value);
+    applyTypographyFromMeta();
+  });
+  document.getElementById('setting-font-size').addEventListener('change', async (e) => {
+    await db.metaSet('fontSize', parseInt(e.target.value, 10) || 15);
+    applyTypographyFromMeta();
+  });
+  document.getElementById('setting-line-height').addEventListener('change', async (e) => {
+    await db.metaSet('lineHeight', parseFloat(e.target.value) || 1.62);
+    applyTypographyFromMeta();
+  });
+  document.getElementById('setting-smart-typography').addEventListener('change', async (e) => {
+    await db.metaSet('smartTypography', e.target.checked);
+    setSmartTypography(e.target.checked);
+  });
+}
+
+async function applyTypographyFromMeta() {
+  const pageSize   = await db.metaGet('pageSize', '6x9');
+  const fontFace   = await db.metaGet('fontFace', 'serif');
+  const fontSize   = await db.metaGet('fontSize', 15);
+  const lineHeight = await db.metaGet('lineHeight', 1.62);
+  const smart      = !!(await db.metaGet('smartTypography', true));
+
+  const dims = PAGE_SIZES[pageSize] || PAGE_SIZES['6x9'];
+  const root = document.documentElement;
+  root.style.setProperty('--page-w', dims.w);
+  root.style.setProperty('--page-h', dims.h);
+  root.style.setProperty('--page-margin', dims.margin);
+  root.style.setProperty('--book-font-face', FONT_FACES[fontFace] || FONT_FACES.serif);
+  root.style.setProperty('--book-font-size', `${fontSize}px`);
+  root.style.setProperty('--book-line-height', String(lineHeight));
+
+  setSmartTypography(smart);
+  paginate.refresh();
 }
 
 async function refreshStorageInfo() {
@@ -580,11 +711,6 @@ async function editDailyGoal() {
   if (state.activeView === 'dashboard') renderDashboard(state.doc);
 }
 
-async function exportJson() {
-  // Kept for backward compatibility — delegates to exportLib.
-  exportLib.exportBookJson(state.doc);
-}
-
 async function importJson(e) {
   const file = e.target.files?.[0];
   if (!file) return;
@@ -598,7 +724,7 @@ async function importJson(e) {
     if (!data || !Array.isArray(data.chapters)) throw new Error('Not a valid book JSON file.');
     await snapshots.forceSnapshot('pre_import');
     cancelEditor();
-    state.doc = sanitizeDoc(data); // strip any malicious html (review fix H10)
+    state.doc = sanitizeDoc(data);
     state.doc.updatedAt = Date.now();
     await db.docSave(state.doc);
     state.activeChapterId = state.doc.chapters[0]?.id || null;
@@ -633,7 +759,6 @@ async function onConnectDriveClick() {
     toast('Paste your OAuth Client ID in Settings first. See SETUP.md.', 'error', 4000);
     return;
   }
-  // Flush pending edits BEFORE we possibly swap doc with the remote copy (review fix H3).
   flushEditor();
   persistDocSoon.flush?.();
   try {
@@ -641,11 +766,9 @@ async function onConnectDriveClick() {
     await auth.authorize({ silent: false });
     toast('Connected to Google Drive.', 'success');
     updateConnectButton();
-    // Reconcile (find/create folder, possibly load remote book).
     await sync.reconcileWithDrive(state.doc, async (remoteDoc) => {
       const proceed = confirm('A newer copy of your book was found on Drive. Use Drive copy? (Cancel = keep local)');
       if (proceed) {
-        // Cancel any debounce that might fire stale data into the new doc.
         cancelEditor();
         state.doc = sanitizeDoc(remoteDoc);
         await db.docSave(state.doc);
@@ -659,7 +782,7 @@ async function onConnectDriveClick() {
         toast('Drive copy loaded.', 'success');
       }
     });
-    sync.markDirty(state.doc); // schedules a push
+    sync.markDirty(state.doc);
   } catch (e) {
     toast('Connect failed: ' + e.message, 'error', 4000);
   }
@@ -696,8 +819,6 @@ function refreshSyncStatus(status, detail) {
   if (ind) {
     ind.className = 'save-indicator ' + (status === 'syncing' ? 'saving' : status === 'synced' ? 'saved' : status === 'error' ? 'error' : '');
   }
-
-  // Drive status block in settings
   const detailDiv = document.getElementById('drive-status-detail');
   if (detailDiv) {
     const ds = sync.getDriveStatus();
@@ -707,12 +828,12 @@ function refreshSyncStatus(status, detail) {
   }
 }
 
-function showSaveIndicator(state) {
+function showSaveIndicator(s) {
   const txt = document.getElementById('save-text');
   const ind = document.getElementById('save-indicator');
   if (!txt || !ind) return;
-  ind.className = 'save-indicator ' + (state === 'saving' ? 'saving' : state === 'saved' ? 'saved' : state === 'error' ? 'error' : '');
-  txt.textContent = state === 'saving' ? 'Saving…' : state === 'saved' ? 'Saved' : state === 'error' ? 'Save error' : 'Ready';
+  ind.className = 'save-indicator ' + (s === 'saving' ? 'saving' : s === 'saved' ? 'saved' : s === 'error' ? 'error' : '');
+  txt.textContent = s === 'saving' ? 'Saving…' : s === 'saved' ? 'Saved' : s === 'error' ? 'Save error' : 'Ready';
 }
 
 async function openDiagnostics() {
@@ -746,6 +867,7 @@ async function collectDiagnostics() {
       lastUpdated: new Date(state.doc.updatedAt).toISOString(),
     },
     activeChapterId: state.activeChapterId,
+    theme: { setting: theme.getTheme(), effective: theme.getEffectiveTheme() },
     auth: auth.authDiag(),
     drive: sync.getDriveStatus(),
     indexedDb: {
@@ -763,33 +885,16 @@ async function collectDiagnostics() {
   };
 }
 
-// ============ FLUSH ON HIDE ============
-
 function flushAll() {
-  // CRITICAL ORDER: flush the EDITOR first so the latest keystrokes get
-  // synthesized into state.doc before we persist (review fix C2).
   flushEditor();
   persistDocSoon.flush?.();
-  // Drive push won't necessarily complete before the page unloads, but the local
-  // copy is already in IndexedDB so nothing is lost.
   sync.pushNow?.().catch(() => {});
   snapshots.forceSnapshot('hidden').catch(() => {});
 }
 
 // ============ DOCX IMPORT FLOW ============
 
-/**
- * Apply a .docx import to state.doc. Always non-destructive: a Published
- * snapshot ('Pre-import: <filename>') is created BEFORE any mutation, so the
- * pre-import state is always reachable from History (and from Drive's
- * versions/ folder once Drive is connected).
- *
- * @param {object} opts
- * @param {'one-chapter'|'split-h1'|'replace'} opts.mode
- * @param {File} opts.file
- */
 async function applyDocxImport({ mode, file }) {
-  // 1. Convert .docx → sanitized HTML.
   let html, messages;
   try {
     ({ html, messages } = await docxBlobToHtml(file));
@@ -798,82 +903,59 @@ async function applyDocxImport({ mode, file }) {
     return;
   }
 
-  // 2. Safety publish — frozen snapshot of the current state, named after the import.
   try {
     await publishCurrentVersion(`Pre-import: ${file.name}`, state.doc, { auth });
   } catch (e) {
     console.warn('safety publish failed (continuing import)', e);
   }
 
-  // 3. Build new chapter rows.
   const fallbackTitle = file.name.replace(/\.docx$/i, '') || 'Imported chapter';
   let newChapters;
   if (mode === 'split-h1') {
     newChapters = splitHtmlByH1(html, fallbackTitle).map(c => makeChapter(c.title, c.html));
   } else {
-    // one-chapter and replace both produce a single chapter from the file.
     newChapters = [makeChapter(fallbackTitle, html || '<p><br></p>')];
   }
 
-  // 4. Apply.
   flushEditor();
   cancelEditor();
-  if (mode === 'replace') {
-    state.doc.chapters = newChapters;
-  } else {
-    state.doc.chapters = state.doc.chapters.concat(newChapters);
-  }
+  if (mode === 'replace') state.doc.chapters = newChapters;
+  else state.doc.chapters = state.doc.chapters.concat(newChapters);
+
   state.doc.updatedAt = Date.now();
   await db.docSave(state.doc);
 
-  // 5. Activate the first newly-imported chapter so the user sees the result.
   state.activeChapterId = newChapters[0].id;
   loadChapter(newChapters[0]);
   refreshPageHeader();
   renderSidebarChapters();
   setActiveView('book');
 
-  // 6. Push immediately — don't wait for debounce.
   sync.markDirty(state.doc);
   sync.pushNow?.().catch(() => {});
 
-  // 7. Tell the user, and surface mammoth's "things I dropped" warnings if any.
   const lossyMsg = (messages || []).filter(m => m.type === 'warning').length;
-  if (mode === 'replace') {
-    toast(`Replaced book with ${newChapters.length} chapter(s) from ${file.name}.`, 'success', 4500);
-  } else if (mode === 'split-h1') {
-    toast(`Imported ${newChapters.length} chapter(s) from ${file.name}.`, 'success', 4500);
-  } else {
-    toast(`Added "${newChapters[0].title}" from ${file.name}.`, 'success', 4500);
-  }
-  if (lossyMsg) {
-    toast(`${lossyMsg} feature(s) from Word were not imported (footnotes, comments, etc).`, 'warning', 6000);
-  }
+  if (mode === 'replace') toast(`Replaced book with ${newChapters.length} chapter(s) from ${file.name}.`, 'success', 4500);
+  else if (mode === 'split-h1') toast(`Imported ${newChapters.length} chapter(s) from ${file.name}.`, 'success', 4500);
+  else toast(`Added "${newChapters[0].title}" from ${file.name}.`, 'success', 4500);
+  if (lossyMsg) toast(`${lossyMsg} feature(s) from Word were not imported (footnotes, comments, etc).`, 'warning', 6000);
   logEvent('imported_docx', `Imported ${file.name}`, { mode, chapters: newChapters.length }).catch(() => {});
 }
 
-/** Build a fresh chapter object with sane metadata from imported title + html. */
 function makeChapter(title, html) {
   return {
     id: uid('ch_'),
     title: (title || 'Imported chapter').slice(0, 200),
-    html,
-    status: 'drafting',
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
+    html, status: 'drafting',
+    createdAt: Date.now(), updatedAt: Date.now(),
   };
 }
 
-/** Sidebar's 📄+ button — quick path, always one-chapter, no modal. */
 function setupQuickDocxImport() {
   const btn = document.getElementById('add-chapter-from-docx-btn');
   const input = document.getElementById('import-docx-input');
   if (!btn || !input) return;
-  btn.addEventListener('click', () => {
-    // Use a separate handler instance so the Settings modal doesn't fight us.
-    input.dataset.target = 'quick';
-    input.click();
-  });
+  btn.addEventListener('click', () => { input.dataset.target = 'quick'; input.click(); });
   input.addEventListener('change', async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -882,24 +964,18 @@ function setupQuickDocxImport() {
       await applyDocxImport({ mode: 'one-chapter', file });
       e.target.value = '';
     } else {
-      // Settings flow — open the modal.
       openImportDocxModal(file);
       e.target.value = '';
     }
   });
 }
 
-/** Settings → "Import .docx…" — opens the modal. */
 function setupSettingsDocxImport() {
   const btn = document.getElementById('import-docx-btn');
   const input = document.getElementById('import-docx-input');
   if (!btn || !input) return;
-  btn.addEventListener('click', () => {
-    input.dataset.target = 'modal';
-    input.click();
-  });
+  btn.addEventListener('click', () => { input.dataset.target = 'modal'; input.click(); });
 
-  // Modal wiring.
   const overlay = document.getElementById('import-docx-overlay');
   const cancel = document.getElementById('import-docx-cancel');
   const confirm = document.getElementById('import-docx-confirm');
@@ -920,26 +996,21 @@ function openImportDocxModal(file) {
   const confirm = document.getElementById('import-docx-confirm');
   if (!overlay || !confirm) return;
   nameEl.textContent = file.name;
-  // Reset to default selection.
   const radios = overlay.querySelectorAll('input[name="import-mode"]');
   radios.forEach(r => { r.checked = (r.value === 'one-chapter'); });
-  // Hide leftover messages.
   const msg = document.getElementById('import-docx-messages');
   if (msg) { msg.hidden = true; msg.innerHTML = ''; }
   confirm.disabled = false;
   confirm.textContent = 'Import';
-
   overlay.hidden = false;
 
-  // Replace the click handler each open so we capture the current file.
   const newConfirm = confirm.cloneNode(true);
   confirm.parentNode.replaceChild(newConfirm, confirm);
   newConfirm.addEventListener('click', async () => {
     const mode = (overlay.querySelector('input[name="import-mode"]:checked') || {}).value || 'one-chapter';
     if (mode === 'replace') {
       const ok = window.confirm(
-        `Replace your entire book with "${_pendingImportFile.name}"?\n\n` +
-        `A "Pre-import" version will be saved automatically — you can always restore from History.`
+        `Replace your entire book with "${_pendingImportFile.name}"?\n\nA "Pre-import" version will be saved automatically — you can always restore from History.`
       );
       if (!ok) return;
     }
@@ -962,43 +1033,24 @@ function closeImportDocxModal() {
   _pendingImportFile = null;
 }
 
-/**
- * Drag-and-drop a .docx onto the chapter list — appends as one new chapter.
- * The editor's existing drop handler explicitly rejects file drops, so the
- * editor stays a safe surface; the chapter list is the only file-drop target.
- */
 function setupChapterListDropZone() {
   const ul = document.getElementById('chapters-list');
   if (!ul) return;
-
   let dragCount = 0;
 
-  const isDocxDrag = (e) => {
+  // Only react to FILE drags; chapter-reorder drags carry x-bookapp-chapter.
+  const isFileDrag = (e) => {
     const items = e.dataTransfer?.items;
     if (!items) return false;
-    for (const it of items) {
-      // During dragover the file isn't accessible yet — check type heuristically.
-      if (it.kind === 'file') return true;
-    }
+    for (const it of items) if (it.kind === 'file') return true;
     return false;
   };
 
-  ul.addEventListener('dragenter', (e) => {
-    if (!isDocxDrag(e)) return;
-    e.preventDefault();
-    dragCount++;
-    ul.classList.add('drag-over');
-  });
-  ul.addEventListener('dragover', (e) => {
-    if (!isDocxDrag(e)) return;
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'copy';
-  });
-  ul.addEventListener('dragleave', () => {
-    dragCount = Math.max(0, dragCount - 1);
-    if (dragCount === 0) ul.classList.remove('drag-over');
-  });
+  ul.addEventListener('dragenter', (e) => { if (!isFileDrag(e)) return; e.preventDefault(); dragCount++; ul.classList.add('drag-over'); });
+  ul.addEventListener('dragover',  (e) => { if (!isFileDrag(e)) return; e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
+  ul.addEventListener('dragleave', () => { dragCount = Math.max(0, dragCount - 1); if (dragCount === 0) ul.classList.remove('drag-over'); });
   ul.addEventListener('drop', async (e) => {
+    if (!isFileDrag(e)) return;
     e.preventDefault();
     dragCount = 0;
     ul.classList.remove('drag-over');
@@ -1012,40 +1064,27 @@ function setupChapterListDropZone() {
   });
 }
 
-// ============ BOOK TABLE OF CONTENTS (left panel) ============
+// ============ BOOK TOC (left panel) ============
 
 let _tocRefreshScheduled = false;
 
 function setupBookToc() {
-  // Collapse / expand
   document.getElementById('toc-collapse-btn')?.addEventListener('click', () => {
     document.querySelector('.book-body')?.classList.add('toc-collapsed');
   });
   document.getElementById('toc-show-btn')?.addEventListener('click', () => {
     document.querySelector('.book-body')?.classList.remove('toc-collapsed');
   });
-
-  // Recompute when the editor's outline changes
   window.addEventListener('book:toc-dirty', scheduleTocRefresh);
-
-  // Initial render
   renderBookToc();
 }
 
 function scheduleTocRefresh() {
   if (_tocRefreshScheduled) return;
   _tocRefreshScheduled = true;
-  // Coalesce bursts into one render per ~300 ms.
-  setTimeout(() => {
-    _tocRefreshScheduled = false;
-    renderBookToc();
-  }, 300);
+  setTimeout(() => { _tocRefreshScheduled = false; renderBookToc(); }, 300);
 }
 
-/**
- * Render the chapters + active-chapter heading outline.
- * Lightweight DOM build (no innerHTML for buttons so handlers stay attached).
- */
 function renderBookToc() {
   const body = document.getElementById('book-toc-body');
   if (!body) return;
@@ -1053,7 +1092,6 @@ function renderBookToc() {
 
   state.doc.chapters.forEach((ch, idx) => {
     const isActive = ch.id === state.activeChapterId;
-
     const btn = document.createElement('button');
     btn.className = 'toc-chapter' + (isActive ? ' active' : '');
 
@@ -1077,7 +1115,6 @@ function renderBookToc() {
     });
     body.appendChild(btn);
 
-    // Heading outline only for the active chapter
     if (isActive) {
       const headings = extractHeadings(ch.html);
       if (headings.length) {
@@ -1097,7 +1134,6 @@ function renderBookToc() {
   });
 }
 
-/** Pull H1/H2 text out of HTML (lightweight regex — works on sanitized output). */
 function extractHeadings(html) {
   const out = [];
   const re = /<h([12])\b[^>]*>([\s\S]*?)<\/h\1>/gi;
@@ -1109,7 +1145,6 @@ function extractHeadings(html) {
   return out;
 }
 
-/** Scroll the editor wrap so the requested heading is near the top. */
 function scrollToHeading(text, level) {
   const editor = document.getElementById('editor');
   if (!editor) return;
@@ -1123,7 +1158,6 @@ function scrollToHeading(text, level) {
   const wrapRect = wrap.getBoundingClientRect();
   const elRect = candidate.getBoundingClientRect();
   wrap.scrollBy({ top: elRect.top - wrapRect.top - 80, behavior: 'smooth' });
-  // Place caret at the heading.
   const range = document.createRange();
   range.selectNodeContents(candidate);
   range.collapse(true);
@@ -1145,26 +1179,17 @@ function setupExportMenu() {
   const btn = document.getElementById('export-btn');
   const menu = document.getElementById('export-menu');
   if (!dropdown || !btn || !menu) return;
-
   const close = () => { menu.hidden = true; };
   const open = () => { menu.hidden = false; };
-
-  btn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    if (menu.hidden) open(); else close();
-  });
-  document.addEventListener('click', (e) => {
-    if (!dropdown.contains(e.target)) close();
-  });
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') close();
-  });
+  btn.addEventListener('click', (e) => { e.stopPropagation(); if (menu.hidden) open(); else close(); });
+  document.addEventListener('click', (e) => { if (!dropdown.contains(e.target)) close(); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
 
   menu.addEventListener('click', async (e) => {
     const item = e.target.closest('.dropdown-item');
     if (!item) return;
     close();
-    flushEditor();              // make sure latest keystrokes are in state.doc
+    flushEditor();
     const action = item.dataset.export;
     try {
       if (action === 'book-docx') {
@@ -1175,6 +1200,11 @@ function setupExportMenu() {
         if (!ch) { toast('Open a chapter first.', 'warning'); return; }
         toast('Building chapter.docx…', '', 1500);
         await exportLib.exportChapterDocx(ch, state.doc.title);
+      } else if (action === 'epub') {
+        toast('Building book.epub…', '', 1500);
+        await exportBookEpub(state.doc);
+      } else if (action === 'markdown') {
+        exportBookMarkdown(state.doc);
       } else if (action === 'print') {
         exportLib.printBook(state.doc);
       } else if (action === 'json') {
@@ -1234,6 +1264,240 @@ function setupPublishFlow() {
     } finally {
       confirmBtn.disabled = false;
       confirmBtn.textContent = 'Publish';
+    }
+  });
+}
+
+// ============ CROSS-CHAPTER SEARCH ============
+
+function setupSearch() {
+  search.setupSearch({
+    getDoc: () => state.doc,
+    getActiveChapterId: () => state.activeChapterId,
+    setActiveChapter: (id) => { setActiveChapter(id); setActiveView('book'); },
+    scrollToCurrentMatch: scrollToCrossChapterMatch,
+    applyReplacementToChapter: applyReplacementInChapter,
+  });
+  document.getElementById('search-project-btn')?.addEventListener('click', () => search.open());
+}
+
+function scrollToCrossChapterMatch(query, idx, m) {
+  const editor = getEditorElement();
+  if (!editor) return;
+  // Find first text node containing the query and scroll to it.
+  const re = new RegExp(escapeRe(query), 'i');
+  const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT, null);
+  let n;
+  while ((n = walker.nextNode())) {
+    const found = n.nodeValue.search(re);
+    if (found < 0) continue;
+    const range = document.createRange();
+    range.setStart(n, found);
+    range.setEnd(n, found + query.length);
+    const sel = window.getSelection();
+    sel.removeAllRanges(); sel.addRange(range);
+    const wrap = document.getElementById('book-page-wrap');
+    const wrapRect = wrap.getBoundingClientRect();
+    const elRect = range.getBoundingClientRect();
+    wrap.scrollBy({ top: elRect.top - wrapRect.top - 120, behavior: 'smooth' });
+    return;
+  }
+}
+function escapeRe(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+function applyReplacementInChapter(chapterId, find, replace, once, caseSensitive) {
+  const idx = state.doc.chapters.findIndex(c => c.id === chapterId);
+  if (idx < 0) return;
+  const ch = state.doc.chapters[idx];
+  const newHtml = replaceInHtml(ch.html || '', find, replace, caseSensitive, once);
+  if (newHtml === ch.html) return;
+  state.doc.chapters[idx] = { ...ch, html: newHtml, updatedAt: Date.now() };
+  state.doc.updatedAt = Date.now();
+  if (state.activeChapterId === chapterId) {
+    loadChapter(state.doc.chapters[idx]);
+  }
+  renderSidebarChapters();
+  persistDocSoon();
+}
+
+// ============ SPRINT TIMER ============
+
+function setupSprint() {
+  sprint.setupSprint({
+    getTotalWords: () => totalStats(state.doc.chapters || []).words,
+    publishSnapshot: (label) => publishCurrentVersion(label, state.doc, { auth }),
+    toast,
+  });
+  const btn = document.getElementById('sprint-btn');
+  const overlay = document.getElementById('sprint-overlay');
+  const startBtn = document.getElementById('sprint-start');
+  const cancelBtn = document.getElementById('sprint-cancel');
+  if (!btn || !overlay || !startBtn) return;
+
+  btn.addEventListener('click', () => {
+    if (sprint.isRunning()) { sprint.stop(); return; }
+    overlay.hidden = false;
+    setTimeout(() => document.getElementById('sprint-target').focus(), 30);
+  });
+  cancelBtn.addEventListener('click', () => overlay.hidden = true);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.hidden = true; });
+
+  startBtn.addEventListener('click', () => {
+    const kind = (overlay.querySelector('input[name="sprint-kind"]:checked') || {}).value || 'minutes';
+    const target = parseInt(document.getElementById('sprint-target').value, 10) || 25;
+    sprint.start({ kind, target });
+    overlay.hidden = true;
+    db.metaSet('sprintGoal', { kind, target }).catch(() => {});
+  });
+}
+
+// ============ QUICK-OPEN PALETTE (⌘P) ============
+
+function setupQuickOpen() {
+  const overlay = document.getElementById('qopen-overlay');
+  const input = document.getElementById('qopen-input');
+  const list = document.getElementById('qopen-list');
+  if (!overlay || !input || !list) return;
+
+  let cursor = 0;
+  let entries = [];
+
+  const close = () => { overlay.hidden = true; };
+  const render = () => {
+    const q = input.value.trim().toLowerCase();
+    entries = state.doc.chapters
+      .map((c, i) => ({ id: c.id, title: c.title || `Chapter ${i + 1}`, idx: i, words: wordsOf(c) }))
+      .filter(c => !q || c.title.toLowerCase().includes(q))
+      .slice(0, 30);
+    cursor = Math.min(cursor, entries.length - 1);
+    if (cursor < 0) cursor = 0;
+    list.innerHTML = entries.map((e, i) => `
+      <li class="${i === cursor ? 'active' : ''}" data-id="${escapeHtml(e.id)}">
+        <span>${escapeHtml(e.idx + 1 + '. ' + e.title)}</span>
+        <span class="qopen-meta">${e.words.toLocaleString()} words</span>
+      </li>`).join('');
+  };
+  const choose = (idx) => {
+    const e = entries[idx];
+    if (!e) return;
+    setActiveChapter(e.id);
+    setActiveView('book');
+    close();
+  };
+
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  input.addEventListener('input', render);
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); cursor = Math.min(entries.length - 1, cursor + 1); render(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); cursor = Math.max(0, cursor - 1); render(); }
+    else if (e.key === 'Enter') { e.preventDefault(); choose(cursor); }
+    else if (e.key === 'Escape') { e.preventDefault(); close(); }
+  });
+  list.addEventListener('click', (e) => {
+    const li = e.target.closest('li');
+    if (!li) return;
+    const idx = entries.findIndex(x => x.id === li.dataset.id);
+    if (idx >= 0) choose(idx);
+  });
+
+  window.addEventListener('qopen:open', () => {
+    cursor = 0;
+    input.value = '';
+    overlay.hidden = false;
+    setTimeout(() => { input.focus(); render(); }, 30);
+  });
+}
+
+// ============ KBD HELP OVERLAY ============
+
+function setupKbdHelp() {
+  const overlay = document.getElementById('kbd-overlay');
+  const close = () => overlay.hidden = true;
+  document.getElementById('kbd-close')?.addEventListener('click', close);
+  overlay?.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  document.getElementById('kbd-help-btn')?.addEventListener('click', () => overlay.hidden = false);
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !overlay.hidden) close();
+  });
+}
+
+// ============ TOPBAR SHORTCUT BUTTONS ============
+
+function setupTopbarShortcutButtons() {
+  document.getElementById('theme-toggle-btn')?.addEventListener('click', () => theme.toggleTheme());
+  document.getElementById('focus-toggle-btn')?.addEventListener('click', () => focus.toggle());
+  document.getElementById('notes-toggle-btn')?.addEventListener('click', () => {
+    if (notes.isOpen()) notes.close();
+    else notes.open(state.activeChapterId);
+  });
+
+  // Refresh the icon glyph when theme changes.
+  const refreshThemeIcon = () => {
+    const eff = theme.getEffectiveTheme();
+    const btn = document.getElementById('theme-toggle-btn');
+    if (btn) btn.textContent = eff === 'dark' ? '☀' : '☾';
+  };
+  window.addEventListener('theme:change', refreshThemeIcon);
+  refreshThemeIcon();
+}
+
+// ============ GLOBAL KEYBOARD SHORTCUTS ============
+
+function setupGlobalShortcuts() {
+  window.addEventListener('keydown', (e) => {
+    const mod = e.metaKey || e.ctrlKey;
+    if (!mod) return;
+    const k = e.key;
+
+    // ⌘F — per-chapter find (handled by editor's toolbar; only when book view)
+    if (k === 'f' && !e.shiftKey && !e.altKey && state.activeView === 'book') {
+      e.preventDefault();
+      document.querySelector('.tb-btn[data-cmd="find"]')?.click();
+      return;
+    }
+
+    // ⌘⇧F — cross-chapter search
+    if ((k === 'f' || k === 'F') && e.shiftKey) {
+      e.preventDefault();
+      search.open();
+      return;
+    }
+
+    // ⌘P — quick-open palette
+    if (k === 'p' && !e.shiftKey) {
+      e.preventDefault();
+      window.dispatchEvent(new CustomEvent('qopen:open'));
+      return;
+    }
+
+    // ⌘. — toggle focus mode
+    if (k === '.') {
+      e.preventDefault();
+      focus.toggle();
+      return;
+    }
+
+    // ⌘⇧L — toggle theme
+    if ((k === 'l' || k === 'L') && e.shiftKey) {
+      e.preventDefault();
+      theme.toggleTheme();
+      return;
+    }
+
+    // ⌘⇧N — toggle notes
+    if ((k === 'n' || k === 'N') && e.shiftKey) {
+      e.preventDefault();
+      if (notes.isOpen()) notes.close();
+      else notes.open(state.activeChapterId);
+      return;
+    }
+
+    // ⌘/ — kbd help
+    if (k === '/') {
+      e.preventDefault();
+      const overlay = document.getElementById('kbd-overlay');
+      if (overlay) overlay.hidden = false;
+      return;
     }
   });
 }

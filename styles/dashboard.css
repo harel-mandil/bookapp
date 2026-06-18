@@ -1,8 +1,7 @@
 /* ============================================================
-   BookApp — Dashboard-specific overrides (most styles are in app.css)
+   dashboard.css — Dashboard-specific overrides (most styles in app.css)
    ============================================================ */
 
-/* status pills used in the chapters table */
 .status-pill {
   display: inline-block;
   padding: 2px 9px;
@@ -12,14 +11,14 @@
   text-transform: capitalize;
 }
 .status-pill.outlined {
-  background: #f0eee8;
-  color: #6b6b6b;
+  background: var(--pill-outlined-bg);
+  color: var(--pill-outlined-fg);
 }
 .status-pill.drafting {
-  background: #fef3c7;
-  color: #92400e;
+  background: var(--pill-drafting-bg);
+  color: var(--pill-drafting-fg);
 }
 .status-pill.done {
-  background: #d1fae5;
-  color: #065f46;
+  background: var(--pill-done-bg);
+  color: var(--pill-done-fg);
 }

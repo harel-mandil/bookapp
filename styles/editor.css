@@ -1,13 +1,14 @@
 /* ============================================================
-   BookApp — Editor / Book Page styling
-   "Amazon book preview" look: 6x9 trade paperback page,
-   running header, page number, justified serif body, drop cap.
+   editor.css — Editor / Book Page styling
+   "Amazon book preview" look + visual pagination + vanilla editor.
+   All colors are tokens (see tokens.css).
    ============================================================ */
 
 #view-book.active {
   display: flex;
   flex-direction: column;
   height: 100%;
+  overflow: hidden;
 }
 
 /* ============ TOOLBAR ============ */
@@ -20,6 +21,8 @@
   background: var(--bg-card);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
+  flex-wrap: wrap;
+  row-gap: 6px;
 }
 .tb-btn {
   background: transparent;
@@ -34,10 +37,16 @@
   align-items: center;
   justify-content: center;
   color: var(--text);
-  transition: background 0.12s;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
 }
-.tb-btn:hover { background: #faf8f4; border-color: var(--border); }
-.tb-btn.active { background: var(--accent-soft); }
+.tb-btn:hover {
+  background: var(--bg-hover);
+  border-color: var(--border);
+}
+.tb-btn.active {
+  background: var(--accent-tint);
+  color: var(--accent);
+}
 .tb-btn b, .tb-btn i { font-style: italic; }
 .tb-btn b { font-weight: 700; font-style: normal; }
 .tb-sep {
@@ -48,368 +57,13 @@
 }
 .tb-spacer { flex: 1; }
 .word-count {
-  font-size: 12px;
+  font-size: var(--font-xs);
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
 
-/* ============ BOOK PAGE ============ */
+/* ============ BOOK BODY (TOC + pages grid) ============ */
 
-.book-page-wrap {
-  flex: 1;
-  overflow-y: auto;
-  padding: 32px 24px 80px;
-  background: var(--bg);
-  display: flex;
-  justify-content: center;
-}
-
-/* The page itself: 6"x9" trade paperback proportion.
-   We do NOT enforce a fixed 9" height while editing — that
-   would force pagination of the contenteditable surface and
-   break cursor/IME (per research §5). The page LOOKS like a
-   book page but flows as the writer types. Pagination preview
-   is a Phase 2 toggle.
-
-   Width: ~6in = ~576px. We use 600px for screen comfort. */
-.book-page {
-  width: 600px;
-  min-height: 800px;
-  background: #fefefb;
-  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.06);
-  border-radius: 2px;
-  padding: 64px 72px 48px;
-  display: grid;
-  grid-template-rows: auto 1fr auto;
-  position: relative;
-  font-family: 'Iowan Old Style', 'Hoefler Text', 'Cambria', 'Georgia', serif;
-  color: #1a1a1a;
-}
-
-/* Running header — book title centered, italic, small caps feel */
-.page-header {
-  font-family: inherit;
-  font-size: 11px;
-  font-style: italic;
-  letter-spacing: 0.08em;
-  color: #888;
-  text-align: center;
-  border-bottom: 1px solid #eae6dd;
-  padding-bottom: 14px;
-  margin-bottom: 36px;
-  text-transform: uppercase;
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-}
-.header-book-title { flex: 1; text-align: left; }
-.header-chapter-title { flex: 1; text-align: right; }
-
-/* Body of the page */
-.page-body {
-  display: flex;
-  flex-direction: column;
-}
-
-/* Chapter title input — styled to look like a book chapter heading */
-.chapter-title-input {
-  font-family: inherit;
-  font-size: 22px;
-  font-weight: 600;
-  text-align: center;
-  border: none;
-  outline: none;
-  background: transparent;
-  margin: 8px 0 36px;
-  padding: 6px 0;
-  width: 100%;
-  letter-spacing: -0.01em;
-  color: var(--text);
-}
-.chapter-title-input::placeholder {
-  color: #c4bdae;
-  font-weight: 400;
-  font-style: italic;
-}
-
-/* The contenteditable editor — flowing prose styled like a book page */
-.editor {
-  flex: 1;
-  font-family: inherit;
-  font-size: 15px;
-  line-height: 1.62;
-  color: #1a1a1a;
-  outline: none;
-  text-align: justify;
-  hyphens: auto;
-  -webkit-hyphens: auto;
-  word-spacing: 0.01em;
-  min-height: 400px;
-}
-
-/* Empty-state placeholder */
-.editor:empty::before {
-  content: attr(data-placeholder);
-  color: #c4bdae;
-  font-style: italic;
-  pointer-events: none;
-}
-
-/* Paragraph styling — first-line indent, no margins (book convention) */
-.editor p {
-  margin: 0;
-  text-indent: 1.5em;
-}
-/* First paragraph after a heading or scene break — flush left */
-.editor h1 + p,
-.editor h2 + p,
-.editor .scene-break + p,
-.editor p:first-child { text-indent: 0; }
-
-/* H1 = chapter section break inside the chapter (rare; mostly the title is the H1) */
-.editor h1 {
-  font-size: 19px;
-  font-weight: 600;
-  text-align: center;
-  margin: 1.6em 0 1em;
-  letter-spacing: -0.005em;
-}
-/* H2 = section heading, small caps feel */
-.editor h2 {
-  font-size: 14px;
-  font-weight: 600;
-  text-align: center;
-  font-variant: small-caps;
-  letter-spacing: 0.1em;
-  margin: 1.5em 0 0.8em;
-  color: #444;
-}
-
-/* Blockquote */
-.editor blockquote {
-  margin: 1em 1.5em;
-  padding-left: 1em;
-  border-left: 2px solid #d4cfc1;
-  font-style: italic;
-  color: #555;
-  text-indent: 0;
-}
-
-/* Scene break — three centered asterisks */
-.editor .scene-break {
-  text-align: center;
-  margin: 1.4em 0;
-  letter-spacing: 0.6em;
-  color: #999;
-  text-indent: 0;
-  user-select: none;
-}
-.editor .scene-break::before { content: '* * *'; }
-
-/* Drop cap on the FIRST paragraph of the chapter */
-.editor > p:first-of-type::first-letter {
-  initial-letter: 3;
-  -webkit-initial-letter: 3;
-  font-weight: 600;
-  margin-right: 0.05em;
-  color: var(--accent);
-  font-feature-settings: 'lnum';
-}
-/* Fallback: float a big first letter on browsers without initial-letter (Chrome, Firefox) */
-@supports not (initial-letter: 3) {
-  .editor > p:first-of-type::first-letter {
-    float: left;
-    font-size: 3.2em;
-    line-height: 0.85;
-    padding: 0.05em 0.05em 0 0;
-    font-weight: 600;
-    color: var(--accent);
-  }
-}
-
-/* Inline marks */
-.editor strong, .editor b { font-weight: 600; color: #111; }
-.editor em, .editor i { font-style: italic; }
-
-/* Selection highlight on the page */
-.editor ::selection,
-.chapter-title-input::selection {
-  background: var(--accent-soft);
-  color: #111;
-}
-
-/* Page footer with page number / chapter ordinal */
-.page-footer {
-  text-align: center;
-  font-family: inherit;
-  font-size: 11px;
-  color: #888;
-  letter-spacing: 0.1em;
-  padding-top: 24px;
-  border-top: 1px solid #eae6dd;
-  margin-top: 40px;
-}
-.page-number {
-  font-style: italic;
-  font-variant-numeric: oldstyle-nums;
-}
-
-/* Print path — when the user prints, drop the screen chrome */
-@media print {
-  #sidebar, #topbar, .editor-toolbar { display: none; }
-  .book-page {
-    box-shadow: none;
-    width: 6in;
-    padding: 0.75in 0.75in;
-  }
-  .book-page-wrap { padding: 0; }
-  @page { size: 6in 9in; margin: 0.75in; }
-}
-
-/* ============================================================
-   PHASE 4 — TipTap rich editor extensions: lists, tables, images,
-   alignment, find-bar, expanded toolbar.
-   ============================================================ */
-
-/* TipTap mounts a `.ProseMirror` div inside #editor — selectors target both
-   the legacy .editor div and the actual editable surface. */
-.editor .ProseMirror {
-  outline: none;
-  min-height: 400px;
-}
-.editor .ProseMirror p.is-editor-empty:first-child::before {
-  content: attr(data-placeholder);
-  color: #c4bdae;
-  font-style: italic;
-  float: left;
-  height: 0;
-  pointer-events: none;
-}
-
-/* Lists */
-.editor ul, .editor ol {
-  margin: 0.6em 0 0.6em 1.5em;
-  padding-left: 1em;
-  text-indent: 0;
-}
-.editor ul li, .editor ol li {
-  margin: 0.2em 0;
-  text-indent: 0;
-}
-.editor ul li > p, .editor ol li > p {
-  margin: 0;
-  text-indent: 0;
-}
-
-/* Tables — break out of the 600px page so they're readable */
-.editor .editor-table,
-.editor table {
-  border-collapse: collapse;
-  margin: 1em auto;
-  width: 100%;
-  max-width: 720px;
-  font-size: 14px;
-  text-indent: 0;
-  table-layout: fixed;
-  overflow: hidden;
-}
-.editor th,
-.editor td {
-  border: 1px solid #d4cfc1;
-  padding: 6px 10px;
-  vertical-align: top;
-  position: relative;
-  text-align: left;
-  text-indent: 0;
-}
-.editor th {
-  background: #f7f3ec;
-  font-weight: 600;
-}
-.editor th p, .editor td p {
-  margin: 0;
-  text-indent: 0;
-}
-.editor .selectedCell { background: rgba(194, 65, 12, 0.12); }
-.editor .column-resize-handle {
-  background-color: var(--accent);
-  bottom: -2px; pointer-events: none;
-  position: absolute; right: -2px; top: 0; width: 4px;
-}
-
-/* Images — center, max-width, drop indent */
-.editor img {
-  display: block;
-  max-width: 100%;
-  height: auto;
-  margin: 1em auto;
-  border-radius: 4px;
-  text-indent: 0;
-}
-.editor figure {
-  margin: 1em auto;
-  text-indent: 0;
-  text-align: center;
-}
-.editor figure img { margin: 0 auto 0.4em; }
-.editor figcaption {
-  font-size: 13px;
-  color: var(--text-muted);
-  font-style: italic;
-}
-
-/* Links */
-.editor a {
-  color: var(--accent);
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
-.editor a:hover { text-decoration-thickness: 2px; }
-
-/* Alignment via inline-style emitted by TextAlign extension */
-.editor [style*="text-align: center"] { text-indent: 0; }
-.editor [style*="text-align: right"]  { text-indent: 0; }
-.editor [style*="text-align: left"]   { text-indent: 0; }
-
-/* Underline & strike */
-.editor u { text-decoration: underline; text-underline-offset: 2px; }
-.editor s, .editor strike { text-decoration: line-through; }
-
-/* Find / Replace bar */
-.find-bar {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-  padding: 8px 16px;
-  background: #fffaf0;
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-}
-.find-bar input[type="text"] {
-  padding: 5px 10px;
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  font: inherit;
-  font-size: 13px;
-  background: #fff;
-  min-width: 160px;
-}
-.find-bar input[type="text"]:focus {
-  outline: 2px solid var(--accent-soft);
-  border-color: var(--accent);
-}
-.find-bar .tb-btn { width: auto; padding: 0 10px; font-size: 12px; }
-
-/* Toolbar can wrap when many buttons */
-.editor-toolbar { flex-wrap: wrap; row-gap: 6px; }
-
-/* Cmd+F open shortcut binding lives in editor.js; visual hint only here. */
-
-/* ============================================================
-   USABILITY FIX — vanilla contenteditable look + left TOC panel
-   ============================================================ */
-
-/* The book view now has a TOC column on the left and the page on the right */
 .book-body {
   flex: 1;
   display: grid;
@@ -418,15 +72,26 @@
   overflow: hidden;
   position: relative;
 }
-.book-body.toc-collapsed {
-  grid-template-columns: 0 1fr;
-}
+.book-body.toc-collapsed { grid-template-columns: 0 1fr; }
 .book-body.toc-collapsed .book-toc { display: none; }
 .book-body.toc-collapsed .toc-show-btn { display: flex; }
 
-/* Left TOC panel */
+@media (max-width: 900px) {
+  .book-body {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+  }
+  .book-toc {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    max-height: 30vh;
+  }
+}
+
+/* ============ LEFT TOC PANEL ============ */
+
 .book-toc {
-  background: #ffffff;
+  background: var(--bg-card);
   border-right: 1px solid var(--border);
   overflow-y: auto;
   padding: 16px 14px 24px;
@@ -459,7 +124,7 @@
   font-size: 16px;
   color: var(--text-muted);
 }
-.toc-show-btn:hover { color: var(--accent); }
+.toc-show-btn:hover { color: var(--accent); border-color: var(--accent); }
 
 .book-toc-body { line-height: 1.6; }
 
@@ -476,10 +141,10 @@
   color: var(--text);
   margin-top: 4px;
 }
-.toc-chapter:hover { background: var(--accent-soft); }
+.toc-chapter:hover { background: var(--accent-tint); color: var(--accent); }
 .toc-chapter.active {
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-on-fg);
   font-weight: 600;
 }
 .toc-chapter-num {
@@ -488,7 +153,7 @@
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
-.toc-chapter.active .toc-chapter-num { color: rgba(255,255,255,0.8); }
+.toc-chapter.active .toc-chapter-num { color: var(--accent-on-fg); opacity: 0.8; }
 .toc-chapter-words {
   float: right;
   color: var(--text-muted);
@@ -496,9 +161,8 @@
   font-variant-numeric: tabular-nums;
   margin-left: 6px;
 }
-.toc-chapter.active .toc-chapter-words { color: rgba(255,255,255,0.8); }
+.toc-chapter.active .toc-chapter-words { color: var(--accent-on-fg); opacity: 0.85; }
 
-/* Heading outline within the active chapter */
 .toc-headings {
   margin: 4px 0 8px 24px;
   padding-left: 8px;
@@ -522,84 +186,257 @@
   text-overflow: ellipsis;
 }
 .toc-heading.h2 { padding-left: 18px; font-size: 12px; }
-.toc-heading:hover { color: var(--accent); background: #fff7ed; }
+.toc-heading:hover { color: var(--accent); background: var(--accent-tint); }
 
-/* Right side — keep the wrap layout that existed before */
+/* ============ BOOK PAGE WRAPPER (scroller) ============ */
+
 .book-page-wrap {
   overflow-y: auto;
   height: 100%;
-  padding: 32px 24px 80px;
+  padding: var(--page-gap) var(--page-gap) calc(var(--page-gap) * 2);
   background: var(--bg);
   display: flex;
-  justify-content: center;
-}
-
-/* Mobile / narrow window — collapse TOC to a top strip */
-@media (max-width: 900px) {
-  .book-body {
-    grid-template-columns: 1fr;
-    grid-template-rows: auto 1fr;
-  }
-  .book-toc {
-    border-right: none;
-    border-bottom: 1px solid var(--border);
-    max-height: 30vh;
-  }
-}
-
-/* Restore #view-book layout — flex column with toolbar + find-bar + book-body */
-#view-book.active {
-  display: flex;
   flex-direction: column;
-  height: 100%;
-  overflow: hidden;
+  align-items: center;
+  gap: var(--page-gap);
 }
 
-/* The vanilla contenteditable replaces .editor .ProseMirror — make the
-   placeholder and cursor work via the data-placeholder attribute. */
-.editor:empty::before,
-.editor[data-empty="1"]::before {
-  content: attr(data-placeholder);
-  color: #c4bdae;
+/* The first "card" is the existing .book-page; .editor flows inside it,
+   and on overflow we render additional .book-page-overflow-marker rules
+   (drawn by paginate.js) to give the visual feel of multiple pages. */
+
+.book-page {
+  width: var(--page-w);
+  min-height: var(--page-h);
+  background: var(--paper);
+  color: var(--paper-text);
+  box-shadow: var(--shadow-page);
+  border-radius: 2px;
+  padding: var(--page-margin) var(--page-margin) calc(var(--page-margin) * 0.7);
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  position: relative;
+  font-family: var(--book-font-face);
+  font-size: var(--book-font-size);
+  line-height: var(--book-line-height);
+  transition: background-color 0.2s, color 0.2s;
+}
+
+/* Running header — book title left, chapter title right */
+.page-header {
+  font-family: inherit;
+  font-size: 11px;
   font-style: italic;
-  pointer-events: none;
+  letter-spacing: 0.08em;
+  color: var(--paper-quiet);
+  text-align: center;
+  border-bottom: 1px solid var(--paper-rule);
+  padding-bottom: 14px;
+  margin-bottom: 36px;
+  text-transform: uppercase;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+.header-book-title    { flex: 1; text-align: left; }
+.header-chapter-title { flex: 1; text-align: right; }
+
+.page-body { display: flex; flex-direction: column; }
+
+/* Chapter title input — book chapter heading look */
+.chapter-title-input {
+  font-family: inherit;
+  font-size: var(--font-xl);
+  font-weight: 600;
+  text-align: center;
+  border: none;
+  outline: none;
+  background: transparent;
+  margin: 8px 0 36px;
+  padding: 6px 0;
+  width: 100%;
+  letter-spacing: -0.01em;
+  color: var(--paper-text);
+}
+.chapter-title-input::placeholder {
+  color: var(--text-placeholder);
+  font-weight: 400;
+  font-style: italic;
+}
+
+/* ============ THE EDITOR (contenteditable) ============ */
+
+.editor {
+  flex: 1;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  color: var(--paper-text);
+  outline: none;
+  text-align: justify;
+  hyphens: auto;
+  -webkit-hyphens: auto;
+  word-spacing: 0.01em;
+  min-height: 400px;
+  /* page-break-relative measurement is taken by paginate.js */
 }
 .editor[contenteditable="true"]:focus { outline: none; }
 
-/* Lists inside the contenteditable — same as the TipTap rules but without
-   the .ProseMirror prefix. */
+.editor:empty::before,
+.editor[data-empty="1"]::before {
+  content: attr(data-placeholder);
+  color: var(--text-placeholder);
+  font-style: italic;
+  pointer-events: none;
+}
+
+/* Paragraph styling — first-line indent, no margins (book convention) */
+.editor p {
+  margin: 0;
+  text-indent: 1.5em;
+}
+.editor h1 + p,
+.editor h2 + p,
+.editor h3 + p,
+.editor .scene-break + p,
+.editor blockquote + p,
+.editor ul + p,
+.editor ol + p,
+.editor table + p,
+.editor figure + p,
+.editor p:first-child { text-indent: 0; }
+
+/* Headings */
+.editor h1 {
+  font-size: 19px;
+  font-weight: 600;
+  text-align: center;
+  margin: 1.6em 0 1em;
+  letter-spacing: -0.005em;
+  color: var(--paper-text);
+}
+.editor h2 {
+  font-size: 14px;
+  font-weight: 600;
+  text-align: center;
+  font-variant: small-caps;
+  letter-spacing: 0.1em;
+  margin: 1.5em 0 0.8em;
+  color: var(--paper-h2);
+}
+.editor h3 {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 1.2em 0 0.6em;
+  color: var(--paper-h2);
+}
+
+/* Blockquote */
+.editor blockquote {
+  margin: 1em 1.5em;
+  padding-left: 1em;
+  border-left: 2px solid var(--paper-quote-rule);
+  font-style: italic;
+  color: var(--paper-quote-text);
+  text-indent: 0;
+}
+
+/* Scene break */
+.editor .scene-break {
+  text-align: center;
+  margin: 1.4em 0;
+  letter-spacing: 0.6em;
+  color: var(--paper-quiet);
+  text-indent: 0;
+  user-select: none;
+}
+.editor .scene-break::before { content: '* * *'; }
+
+/* Drop cap on the first paragraph of the chapter */
+.editor > p:first-of-type::first-letter {
+  initial-letter: 3;
+  -webkit-initial-letter: 3;
+  font-weight: 600;
+  margin-right: 0.05em;
+  color: var(--accent);
+  font-feature-settings: 'lnum';
+}
+@supports not (initial-letter: 3) {
+  .editor > p:first-of-type::first-letter {
+    float: left;
+    font-size: 3.2em;
+    line-height: 0.85;
+    padding: 0.05em 0.05em 0 0;
+    font-weight: 600;
+    color: var(--accent);
+  }
+}
+
+/* Inline marks */
+.editor strong, .editor b { font-weight: 600; color: var(--text-strong); }
+.editor em,     .editor i { font-style: italic; }
+.editor u                 { text-decoration: underline; text-underline-offset: 2px; }
+.editor s, .editor strike { text-decoration: line-through; }
+
+/* Selection highlight */
+.editor ::selection,
+.chapter-title-input::selection {
+  background: var(--accent-soft);
+  color: var(--text-strong);
+}
+
+/* Highlight for find/replace match */
+.editor mark.bookapp-match {
+  background: var(--accent-soft);
+  color: var(--text-strong);
+  border-radius: 2px;
+  padding: 0 1px;
+}
+.editor mark.bookapp-match.current {
+  background: var(--accent);
+  color: var(--accent-on-fg);
+}
+
+/* Lists */
 .editor ul, .editor ol {
   margin: 0.6em 0 0.6em 1.5em;
   padding-left: 1em;
   text-indent: 0;
 }
 .editor ul li, .editor ol li { margin: 0.2em 0; text-indent: 0; }
+.editor ul li > p, .editor ol li > p { margin: 0; text-indent: 0; }
 
 /* Tables */
 .editor table, .editor .editor-table {
   border-collapse: collapse;
   margin: 1em auto;
   width: 100%;
-  max-width: 720px;
+  max-width: 100%;
   font-size: 14px;
   text-indent: 0;
   table-layout: fixed;
 }
 .editor th, .editor td {
-  border: 1px solid #d4cfc1;
+  border: 1px solid var(--table-cell-rule);
   padding: 6px 10px;
   vertical-align: top;
   text-align: left;
   text-indent: 0;
+  color: var(--paper-text);
 }
-.editor th { background: #f7f3ec; font-weight: 600; }
+.editor th {
+  background: var(--table-head-bg);
+  font-weight: 600;
+}
+.editor th p, .editor td p { margin: 0; text-indent: 0; }
+.editor .selectedCell { background: var(--selected-cell); }
 
 /* Images */
 .editor img {
   display: block;
   max-width: 100%;
   height: auto;
-  margin: 0 auto;
+  margin: 1em auto;
   border-radius: 4px;
   text-indent: 0;
 }
@@ -608,6 +445,12 @@
   text-indent: 0;
   text-align: center;
 }
+.editor figure img { margin: 0 auto 0.4em; }
+.editor figcaption {
+  font-size: 13px;
+  color: var(--text-muted);
+  font-style: italic;
+}
 
 /* Links */
 .editor a {
@@ -615,3 +458,157 @@
   text-decoration: underline;
   text-underline-offset: 2px;
 }
+.editor a:hover { text-decoration-thickness: 2px; }
+
+/* Alignment via inline-style emitted by JS */
+.editor [style*="text-align: center"] { text-indent: 0; }
+.editor [style*="text-align: right"]  { text-indent: 0; }
+.editor [style*="text-align: left"]   { text-indent: 0; }
+
+/* ============ PAGE-BREAK CHROME (visual pagination) ============ */
+/*
+   paginate.js inserts <hr class="page-break" data-page-num="N"> after
+   blocks that fit in the current page. Each break draws a footer line
+   for the page just ended and a header line for the next page, plus a
+   grey "gap" between them so it visually reads like two physical pages.
+*/
+
+.editor hr.page-break {
+  border: none;
+  height: 0;
+  margin: 0;
+  padding: 0;
+  position: relative;
+  overflow: visible;
+  break-after: page;
+  /* Inject empty space large enough to draw the chrome via ::before/::after */
+  margin-top: 1.4em;
+  margin-bottom: 1.4em;
+}
+
+/* Footer of the just-closed page (page number + rule) */
+.editor hr.page-break::before {
+  content: '— ' attr(data-page-num) ' —';
+  display: block;
+  text-align: center;
+  font-family: inherit;
+  font-size: 11px;
+  font-style: italic;
+  color: var(--paper-quiet);
+  letter-spacing: 0.1em;
+  font-variant-numeric: oldstyle-nums;
+  border-top: 1px solid var(--paper-rule);
+  padding-top: 12px;
+  margin: 12px calc(var(--page-margin) * -1) 0;
+  padding-left: var(--page-margin);
+  padding-right: var(--page-margin);
+}
+
+/* Header of the next page (book title left, chapter right) */
+.editor hr.page-break::after {
+  content: attr(data-book) '   •   ' attr(data-chapter);
+  display: block;
+  text-align: center;
+  font-family: inherit;
+  font-size: 11px;
+  font-style: italic;
+  color: var(--paper-quiet);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--paper-rule);
+  padding-bottom: 10px;
+  margin: calc(var(--page-gap) + 18px) calc(var(--page-margin) * -1) 18px;
+  padding-left: var(--page-margin);
+  padding-right: var(--page-margin);
+  /* The visible "gap" between pages is sized by --page-gap. */
+  position: relative;
+  background:
+    linear-gradient(to bottom,
+      transparent 0,
+      transparent 8px,
+      var(--bg) 8px,
+      var(--bg) calc(var(--page-gap) + 8px),
+      transparent calc(var(--page-gap) + 8px)
+    );
+}
+
+/* When focus mode hides chrome we still want the page chrome readable. */
+body.focus-mode .editor hr.page-break::before,
+body.focus-mode .editor hr.page-break::after { opacity: 0.6; }
+
+/* ============ PAGE FOOTER (last/only page number) ============ */
+
+.page-footer {
+  text-align: center;
+  font-family: inherit;
+  font-size: 11px;
+  color: var(--paper-quiet);
+  letter-spacing: 0.1em;
+  padding-top: 24px;
+  border-top: 1px solid var(--paper-rule);
+  margin-top: 40px;
+}
+.page-number {
+  font-style: italic;
+  font-variant-numeric: oldstyle-nums;
+}
+
+/* ============ FIND BAR ============ */
+
+.find-bar {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 8px 16px;
+  background: var(--findbar-bg);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+.find-bar input[type="text"] {
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font: inherit;
+  font-size: 13px;
+  background: var(--findbar-input-bg);
+  color: var(--text);
+  min-width: 160px;
+}
+.find-bar input[type="text"]:focus {
+  outline: 2px solid var(--accent-soft);
+  border-color: var(--accent);
+}
+.find-bar .tb-btn { width: auto; padding: 0 10px; font-size: 12px; }
+.find-bar .find-stats {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  margin-left: 4px;
+}
+.find-bar.scope-project { background: var(--accent-tint); }
+
+/* ============ PRINT ============ */
+
+@media print {
+  #sidebar, #topbar, .editor-toolbar, #book-toc, .toc-show-btn,
+  .find-bar, .sprint-chip, .notes-rail, .focus-exit-btn { display: none !important; }
+  .book-page-wrap { padding: 0; gap: 0; }
+  .book-page {
+    box-shadow: none;
+    width: 6in;
+    min-height: 0;
+    padding: 0.75in 0.75in;
+  }
+  .editor hr.page-break::before,
+  .editor hr.page-break::after { display: none; }
+  @page { size: 6in 9in; margin: 0.75in; }
+}
+
+/* ============ FOCUS MODE TWEAKS ============ */
+
+body.focus-mode .book-page {
+  box-shadow: none;
+  background: var(--paper);
+}
+body.focus-mode .book-page-wrap { background: var(--bg); }

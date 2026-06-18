@@ -2,92 +2,124 @@
 
 Things that don't work the way you might expect, with the *why* and the workaround.
 
+## Pagination
+
+### Page breaks won't split inside a single block
+The visual page-break feature (the cards that look like a stack of 6×9 paperback pages) inserts breaks BETWEEN block-level elements (paragraphs, headings, lists, tables). It does NOT split the middle of a long blockquote, table, or oversized image. If a block is taller than the page itself, it overflows the page rather than splitting.
+
+**Workaround:** for very long blockquotes or tables, break them up into multiple blocks. The editor handles this naturally as you type.
+
+### Page numbers shown on screen are approximate
+The on-screen page count is computed by measuring rendered block heights at the current font size and page format. Word's `.docx` and the print/PDF output re-paginate using their own engines; expect ±10% drift between the on-screen count and the final printed page count.
+
+### Changing font / page format re-flows visibly
+Switching page size (e.g. 6×9 → A4) or font size in Settings causes pagination to recompute, which can make the editor flash for ~200 ms and shift the caret position relative to the page. Your content is untouched; only the page chrome moves.
+
+---
+
+## Theming
+
+### Dark-mode book-page color is warm graphite, not black
+The "paper" in dark mode is `#1f1f1c` — a warm dark gray that's easier on the eyes for long sessions. If you prefer pure black, this can be exposed as a setting later.
+
+### Sidebar is always dark
+By design — visually anchors the app the way Notion / Linear / Slack do. If you really want a light sidebar, file an issue.
+
+---
+
 ## Import / Export
 
 ### `.docx` import drops some Word features
 We use the open-source [mammoth.js](https://github.com/mwilliamson/mammoth.js) library, which intentionally focuses on semantic content. These are stripped on import:
 - **Footnotes & endnotes** — body text is kept, but the references and notes themselves disappear.
 - **Comments & tracked changes** — body text is kept, comments/changes vanish.
-- **Embedded equations** (Word's equation editor) — vanish silently.
+- **Embedded equations** — vanish silently.
 - **Embedded objects** (Excel charts, PDFs, etc.) — dropped.
 - **Most fancy Word styles** — only Heading 1/2/3, Title, Subtitle, Quote, and basic bold/italic/underline survive.
 
-If you see a yellow **"X feature(s) from Word were not imported"** toast after importing, this is what it's referring to.
-
-**Workaround:** for important footnotes, convert them to inline parentheticals before importing.
-
 ### `.docx` import doesn't bring images yet
-Mammoth can extract images from a Word file, but the current build doesn't pipe them into the editor. That's a planned upgrade.
+Mammoth can extract images, but the current build doesn't pipe them into the editor. Planned.
 
 ### `.docx` export with external image URLs drops them
-If you embed an image by URL (not by upload), the .docx export can't fetch it from the browser due to CORS. The export silently replaces the image with a `[image: <alt text>]` placeholder.
+URL images can't be fetched at export time due to CORS. They're replaced with a `[image: <alt text>]` placeholder. Upload images directly (toolbar → image button) to embed them as base64.
 
-**Workaround:** upload images directly (via the toolbar's image button → "leave URL blank to upload"). Uploaded images embed as base64 inside `book.json` and survive export round-trips.
+### EPUB export is minimal
+The EPUB export is a valid EPUB 3 (passes Apple Books, Calibre, most readers) but doesn't yet include cover image metadata, ISBN, or per-chapter rich metadata. Planned.
+
+### Markdown export is best-effort
+The Markdown converter handles paragraphs, headings, lists, blockquotes, links, images, tables, bold/italic. It does NOT preserve text alignment, scene breaks (rendered as `* * *`), or custom spacing.
 
 ---
 
 ## Storage
 
 ### Images bloat `book.json`
-Images are stored as base64 strings inside `book.json` — every 1 MB of image becomes ~1.4 MB of JSON. Practical limit is roughly **50 medium-resolution images** before the file gets unwieldy (~50 MB). Past that, Drive sync slows noticeably.
-
-**Long-term fix:** store images as separate files in `BookApp/media/` and reference them by Drive ID. Not yet built.
+Images are stored as base64 inside `book.json` — every 1 MB of image becomes ~1.4 MB of JSON. Practical limit is roughly **50 medium-resolution images**.
 
 ### `book.docx` mirror lags `book.json` by ~30 seconds
-The JSON working file pushes to Drive 4 seconds after you stop typing. The `.docx` mirror waits ~30 seconds (longer if you're actively typing) and runs the conversion during browser idle time. This is on purpose — generating .docx is 200-800 ms of CPU work and running it on every keystroke would stutter typing.
-
-**Behavior:** book.docx is for "open in Word" workflows, not live collaboration. Treat it as ~30 seconds stale.
+On purpose — `.docx` generation is 200–800 ms of CPU work and running it on every keystroke would stutter typing.
 
 ### Two browser tabs editing the same book = upgrade-blocked toast
-If you have BookApp open in two tabs and one tries to upgrade the IndexedDB schema (e.g. after a deploy), the second tab's upgrade is blocked. You'll see a toast asking you to close the other tab and reload.
-
-**Workaround:** keep one tab. If you see the toast, close all other BookApp tabs and refresh.
+Keep one tab. If you see the toast, close all other BookApp tabs and refresh.
 
 ### `drive.file` scope: deleting Drive files manually creates orphans
-The app uses Google's `drive.file` OAuth scope, which means it can only see files it created. If you go to Drive's web UI and manually delete `book.json` or move the `BookApp` folder, the app:
-1. Can't see that the deletion happened
-2. Will create a duplicate `book.json` on next save (with a new file ID)
-3. Your old data still exists locally in IndexedDB
-
-**Recommendation:** don't manually edit the `BookApp` folder in Drive. Use the in-app **Reset everything (local only)** button if you need to start fresh.
+The app uses Google's `drive.file` OAuth scope. Don't manually edit the `BookApp` folder in Drive — use **Reset everything (local only)** to start fresh.
 
 ---
 
 ## Editor
 
-### Find / Replace is per-chapter only
-The find bar only searches the chapter you're currently viewing. Cross-chapter find is a planned upgrade.
-
-**Workaround:** click each chapter, search separately. (Or use your browser's native `Cmd+F` on the rendered page — works for find, not replace.)
-
 ### Drop cap only renders on the first paragraph
-The big colored first-letter (drop cap) is CSS-driven and applies to the *first paragraph* of the chapter. If your first block is a heading or scene break, the drop cap moves to the next paragraph after it.
+CSS-driven; if your first block is a heading or scene break, the drop cap moves to the next paragraph after it.
 
 ### Pasting from Google Docs / Word strips formatting
-On purpose. The sanitizer aggressively strips style overrides because Google Docs paste contains 100s of inline `style=""` attributes that pollute the document. We keep: paragraphs, headings, bold/italic/underline, strikethrough, blockquotes, lists, tables, links, images, and text alignment. Everything else (font, color, custom spacing) is dropped.
+On purpose. We keep: paragraphs, headings, bold/italic/underline, strikethrough, blockquotes, lists, tables, links, images, and text alignment. Everything else (font, color, custom spacing) is dropped.
 
-**Workaround:** if you need exact-formatting preservation, paste into a fresh paragraph and re-apply formatting using the toolbar.
+### Smart-typography is conservative
+Curly quotes / em-dash / ellipsis only fire when you've JUST typed the trigger character — they don't sweep through existing text. To turn off, uncheck **Settings → Appearance → Smart typography**.
 
 ---
 
 ## Versions / History
 
 ### Restoring an old version creates two new versions
-When you restore a snapshot, the app:
-1. Creates a `pre_restore` snapshot (your current state)
-2. Replaces the document with the restored version
-3. Creates a `post_restore` snapshot (the new state)
+- `pre_restore` (your current state)
+- `post_restore` (the restored state)
 
-This is intentional — it makes restore reversible. It can clutter History; use the **Auto** filter pill to hide them.
+Intentional — makes restore reversible. Use the **Auto** filter pill to hide them.
 
 ### Published versions are immortal
-By design — they never get pruned by the retention sweep. If you publish many versions you'll never lose any of them, but the `versions/` folder in Drive grows over time. Manually delete from Drive if needed (the app won't see it again — see "drive.file scope" above).
+By design. They live forever in IndexedDB and Drive's `versions/` folder.
 
 ---
 
-## Migration
+## Backlog (planned but not yet built)
 
-### One-time `Pre-TipTap-migration` published version on first load
-After upgrading to the rich editor, the app auto-publishes a `Pre-TipTap-migration` snapshot before initializing the new editor. This is your safety net in case anything renders unexpectedly. It only fires once per book.
+These are tracked features that aren't blocking. Ask for any by number.
 
-**You can delete it from History** once you've verified your chapters look correct.
+| # | Feature | Notes |
+|---|---|---|
+| 11 | Typewriter mode | Caret stays vertically centered |
+| 12 | Focus current paragraph | Fade others to 0.4 opacity |
+| 13 | Two-page spread view | Side-by-side review layout |
+| 14 | Prominent KDP page count on dashboard | Already estimated; surface it bigger |
+| 18 | Inline rename of chapter from sidebar | Double-click the row |
+| 19 | Heading auto-numbering | "Chapter 7" prefix |
+| 20 | Block-style dropdown | Title / H1 / H2 / H3 / Body / Quote |
+| 21 | Footnotes | Superscript markers + bottom-of-page rendering |
+| 22 | Markdown shortcuts while typing | `# `, `> `, `* ` |
+| 28 | Calendar heatmap | GitHub-style writing-day grid |
+| 29 | Daily streak history view | List of streaks |
+| 32 | Bookmarks (`⌘D`) | Flag a paragraph |
+| 33 | Go-to-page (`⌘G`) | Jump by page number |
+| 35 | Character sheet templates | Structured doc type |
+| 36 | Location / world-building cards | Same |
+| 37 | Timeline view | Chapter cards on a date axis |
+| 40 | Manuscript-format `.docx` preset | Times 12pt, double-spaced, 1″ margins |
+| 41 | WYSIWYG print preview | Full-window preview before printing |
+| 42 | Multi-select chapter export | Pick a subset |
+| 45 | Snippets | Reusable text blocks |
+| 46 | Recently-edited chapters list | Quick-list in sidebar |
+| 48 | Dyslexia-friendly font option | OpenDyslexic from CDN |
+| 49 | Screen-reader audit | ARIA labels, focus order |
+| 50 | RTL toggle | Hebrew / Arabic / Farsi |

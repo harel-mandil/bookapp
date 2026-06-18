@@ -36,6 +36,7 @@
 import { stats } from './stats.js';
 import { debounce, escapeHtml } from './utils.js';
 import { sanitizeHtml } from './sanitize.js';
+import { attach as attachTypography } from './typography.js';
 
 let editorEl = null;
 let titleEl = null;
@@ -150,7 +151,13 @@ export async function mountEditor(opts) {
 
   refreshToolbar();
   refreshWordCount();
+
+  // Smart-typography input hook (toggleable via setSmartTypography).
+  attachTypography(editorEl);
 }
+
+/** Expose the editor DOM node for modules like paginate.js / search.js. */
+export function getEditorElement() { return editorEl; }
 
 // ============ CHAPTER LOAD / SAVE ============
 
@@ -175,8 +182,13 @@ export function loadChapter(chapter) {
 export function snapshotChapter() {
   return {
     title: titleEl ? titleEl.value : (currentChapter?.title ?? ''),
-    html: editorEl ? sanitizeHtml(editorEl.innerHTML) : (currentChapter?.html ?? ''),
+    html: editorEl ? sanitizeHtml(stripPageBreaks(editorEl.innerHTML)) : (currentChapter?.html ?? ''),
   };
+}
+
+/** Strip the visual page-break HRs paginate.js injects — they're presentational. */
+function stripPageBreaks(html) {
+  return String(html || '').replace(/<hr[^>]*class=["'][^"']*page-break[^"']*["'][^>]*>/gi, '');
 }
 
 // ============ DEBOUNCED CHANGE NOTIFICATION ============
@@ -369,7 +381,7 @@ function moveCaretToDropPoint(e) {
 
 /** Make sure the editor's direct children are block-level. Wrap stray nodes. */
 function normalizeRoot() {
-  const blockTags = new Set(['P','H1','H2','H3','H4','BLOCKQUOTE','UL','OL','TABLE','FIGURE','PRE']);
+  const blockTags = new Set(['P','H1','H2','H3','H4','BLOCKQUOTE','UL','OL','TABLE','FIGURE','PRE','HR']);
   for (const node of [...editorEl.childNodes]) {
     if (node.nodeType === 1 && blockTags.has(node.tagName)) continue;
     if (node.nodeType === 3 && !node.textContent.trim()) {

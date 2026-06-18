@@ -3,7 +3,9 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="light dark" />
   <title>BookApp — Your Writing Studio</title>
+  <link rel="stylesheet" href="styles/tokens.css" />
   <link rel="stylesheet" href="styles/app.css" />
   <link rel="stylesheet" href="styles/editor.css" />
   <link rel="stylesheet" href="styles/dashboard.css" />
@@ -42,7 +44,7 @@
       <!-- Chapters list (visible in book view) -->
       <div class="sidebar-section" id="chapters-section">
         <div class="section-title">
-          Chapters
+          <span>Chapters</span>
           <button class="icon-btn" id="add-chapter-from-docx-btn" title="Add chapter from .docx file">📄+</button>
           <button class="icon-btn" id="add-chapter-btn" title="Add chapter">+</button>
         </div>
@@ -69,11 +71,18 @@
           <span class="save-indicator" id="save-indicator" title="Last save status">
             <span id="save-text">Ready</span>
           </span>
+          <button class="icon-btn" id="theme-toggle-btn" title="Toggle light / dark">☾</button>
+          <button class="icon-btn" id="focus-toggle-btn" title="Distraction-free mode (⌘.)">◐</button>
+          <button class="icon-btn" id="notes-toggle-btn" title="Author notes (this chapter)">📝</button>
+          <button class="icon-btn" id="sprint-btn" title="Start a writing sprint">⏱</button>
+          <button class="icon-btn" id="kbd-help-btn" title="Keyboard shortcuts (⌘/)">?</button>
           <div class="dropdown" id="export-dropdown">
             <button class="btn btn-ghost" id="export-btn" title="Export your book">⬇ Export</button>
             <div class="dropdown-menu" id="export-menu" hidden>
               <button class="dropdown-item" data-export="book-docx">📄 Entire book (.docx)</button>
               <button class="dropdown-item" data-export="chapter-docx">📄 Current chapter (.docx)</button>
+              <button class="dropdown-item" data-export="epub">📕 EPUB 3</button>
+              <button class="dropdown-item" data-export="markdown">📝 Markdown (.md)</button>
               <button class="dropdown-item" data-export="print">🖨️ Print / PDF</button>
               <div class="dropdown-divider"></div>
               <button class="dropdown-item" data-export="json">{ } JSON backup</button>
@@ -100,6 +109,8 @@
               <span><strong id="page-estimate">0</strong> pages</span>
             </div>
           </div>
+
+          <div class="sparkline-card" id="sparkline-card"></div>
 
           <div class="stats-grid">
             <div class="stat-card">
@@ -138,7 +149,7 @@
             <h3>Chapters</h3>
             <table class="chapters-table" id="chapters-table">
               <thead>
-                <tr><th>#</th><th>Title</th><th>Words</th><th>Status</th><th>Reading</th></tr>
+                <tr><th>#</th><th>Title</th><th>Words</th><th>Goal</th><th>Status</th><th>Reading</th></tr>
               </thead>
               <tbody id="chapters-table-body"></tbody>
             </table>
@@ -157,7 +168,7 @@
           <button class="tb-btn" data-cmd="underline" title="Underline (⌘U)"><u>U</u></button>
           <button class="tb-btn" data-cmd="strike" title="Strikethrough"><s>S</s></button>
           <span class="tb-sep"></span>
-          <button class="tb-btn" data-cmd="h1" title="Chapter title">H1</button>
+          <button class="tb-btn" data-cmd="h1" title="Chapter heading">H1</button>
           <button class="tb-btn" data-cmd="h2" title="Section heading">H2</button>
           <button class="tb-btn" data-cmd="paragraph" title="Paragraph">¶</button>
           <button class="tb-btn" data-cmd="blockquote" title="Blockquote">❝</button>
@@ -165,9 +176,9 @@
           <button class="tb-btn" data-cmd="bulletList" title="Bullet list">•≡</button>
           <button class="tb-btn" data-cmd="orderedList" title="Numbered list">1≡</button>
           <span class="tb-sep"></span>
-          <button class="tb-btn" data-cmd="align-left" title="Align left">⎝</button>
+          <button class="tb-btn" data-cmd="align-left" title="Align left">⎐</button>
           <button class="tb-btn" data-cmd="align-center" title="Center">≡</button>
-          <button class="tb-btn" data-cmd="align-right" title="Align right">⎠</button>
+          <button class="tb-btn" data-cmd="align-right" title="Align right">⎑</button>
           <button class="tb-btn" data-cmd="align-justify" title="Justify">☰</button>
           <span class="tb-sep"></span>
           <button class="tb-btn" data-cmd="link" title="Link (⌘K)">🔗</button>
@@ -175,7 +186,8 @@
           <button class="tb-btn" data-cmd="table" title="Insert 3×3 table">⊞</button>
           <button class="tb-btn" data-cmd="scenebreak" title="Scene break">⁂</button>
           <span class="tb-sep"></span>
-          <button class="tb-btn" data-cmd="find" title="Find / Replace (⌘F)">🔍</button>
+          <button class="tb-btn" data-cmd="find" title="Find in chapter (⌘F)">🔍</button>
+          <button class="tb-btn" id="search-project-btn" title="Find across whole book (⌘⇧F)">🔎</button>
           <span class="tb-spacer"></span>
           <span class="word-count">
             <span id="chapter-word-count">0</span> words ·
@@ -183,15 +195,31 @@
           </span>
         </div>
 
-        <!-- Find / Replace bar (hidden by default) -->
+        <!-- Per-chapter Find / Replace bar -->
         <div class="find-bar" id="find-bar" hidden>
-          <input type="text" name="q" placeholder="Find…" />
+          <input type="text" name="q" placeholder="Find in chapter…" />
           <input type="text" name="r" placeholder="Replace with…" />
           <button class="tb-btn" data-find="prev" title="Previous">↑</button>
           <button class="tb-btn" data-find="next" title="Next">↓</button>
           <button class="tb-btn" data-find="replace" title="Replace one">Replace</button>
           <button class="tb-btn" data-find="replace-all" title="Replace all">Replace all</button>
           <button class="tb-btn" data-find="close" title="Close">×</button>
+        </div>
+
+        <!-- Cross-chapter search bar (⌘⇧F) -->
+        <div class="find-bar scope-project" id="search-bar" hidden>
+          <span style="font-weight:600;font-size:12px;">Whole book:</span>
+          <input type="text" name="q" placeholder="Find across all chapters…" />
+          <input type="text" name="r" placeholder="Replace with…" />
+          <label style="font-size:12px;color:var(--text-muted);display:flex;align-items:center;gap:4px;">
+            <input type="checkbox" name="case"> Aa
+          </label>
+          <button class="tb-btn" data-search="prev" title="Previous">↑</button>
+          <button class="tb-btn" data-search="next" title="Next">↓</button>
+          <button class="tb-btn" data-search="replace" title="Replace one">Replace</button>
+          <button class="tb-btn" data-search="replace-all" title="Replace all">Replace all</button>
+          <span class="find-stats"></span>
+          <button class="tb-btn" data-search="close" title="Close">×</button>
         </div>
 
         <div class="book-body">
@@ -206,7 +234,7 @@
 
           <button class="toc-show-btn" id="toc-show-btn" title="Show table of contents" hidden>›</button>
 
-          <div class="book-page-wrap">
+          <div class="book-page-wrap" id="book-page-wrap">
             <div class="book-page" id="book-page">
               <div class="page-header">
                 <span class="header-book-title" id="page-header-book"></span>
@@ -273,6 +301,57 @@
           <h2 class="view-heading">Settings</h2>
 
           <div class="setting-block">
+            <h3>Appearance</h3>
+            <label>Theme
+              <div class="theme-radio-row">
+                <label><input type="radio" name="theme" value="light"> ☀ Light</label>
+                <label><input type="radio" name="theme" value="dark"> ☾ Dark</label>
+                <label><input type="radio" name="theme" value="system"> ⟳ System</label>
+              </div>
+            </label>
+            <label>Page format
+              <select id="setting-page-size">
+                <option value="6x9">6 × 9 in (KDP trade paperback)</option>
+                <option value="5x8">5 × 8 in (KDP mass-market)</option>
+                <option value="letter">8.5 × 11 in (US Letter)</option>
+                <option value="a4">A4 (210 × 297 mm)</option>
+                <option value="a5">A5 (148 × 210 mm)</option>
+              </select>
+            </label>
+            <label>Body font
+              <select id="setting-font-face">
+                <option value="serif">Serif (Iowan / Cambria / Georgia)</option>
+                <option value="sans">Sans (Inter / system)</option>
+                <option value="mono">Mono (SF Mono / Menlo)</option>
+              </select>
+            </label>
+            <label>Font size
+              <select id="setting-font-size">
+                <option value="13">13 px</option>
+                <option value="14">14 px</option>
+                <option value="15" selected>15 px (default)</option>
+                <option value="17">17 px</option>
+                <option value="19">19 px</option>
+              </select>
+            </label>
+            <label>Line height
+              <select id="setting-line-height">
+                <option value="1.4">1.4 — tight</option>
+                <option value="1.55">1.55</option>
+                <option value="1.62" selected>1.62 — book default</option>
+                <option value="1.8">1.8 — loose</option>
+                <option value="2.0">2.0 — manuscript</option>
+              </select>
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" id="setting-smart-typography" checked>
+              <span>Smart typography
+                <small>Curly quotes, em-dashes (<code>--</code> → —), ellipsis (<code>...</code> → …)</small>
+              </span>
+            </label>
+          </div>
+
+          <div class="setting-block">
             <h3>Book</h3>
             <label>Book title
               <input type="text" id="setting-book-title" />
@@ -303,8 +382,9 @@
             <div id="storage-info">—</div>
             <label class="checkbox-label">
               <input type="checkbox" id="setting-mirror-docx" />
-              Also keep a <strong>book.docx</strong> mirror in your Drive folder
-              <small>(updates ~30 s after each change; lets you open the book directly in Word/Pages)</small>
+              <span>Also keep a <strong>book.docx</strong> mirror in your Drive folder
+                <small>(updates ~30 s after each change; lets you open the book directly in Word/Pages)</small>
+              </span>
             </label>
             <div class="settings-actions">
               <button class="btn-link" id="export-json-btn">Export book as JSON</button>
@@ -400,6 +480,81 @@
       </footer>
     </div>
   </div>
+
+  <!-- ============ SPRINT MODAL ============ -->
+  <div id="sprint-overlay" class="overlay" hidden>
+    <div class="modal-panel">
+      <header><h3>Start a writing sprint</h3></header>
+      <div class="modal-body">
+        <p class="modal-help">Set a target — either time or words. The chip in the corner ticks down. When done you'll get a soft beep and a published snapshot.</p>
+        <label>Mode
+          <div class="theme-radio-row" style="gap:8px;">
+            <label><input type="radio" name="sprint-kind" value="minutes" checked> ⏱ Minutes</label>
+            <label><input type="radio" name="sprint-kind" value="words"> ✏️ Words</label>
+          </div>
+        </label>
+        <label>Target
+          <input type="number" id="sprint-target" min="1" step="1" value="25" />
+        </label>
+      </div>
+      <footer>
+        <button class="btn-link" id="sprint-cancel">Cancel</button>
+        <button class="btn" id="sprint-start">Start</button>
+      </footer>
+    </div>
+  </div>
+
+  <!-- ============ KEYBOARD SHORTCUTS HELP OVERLAY ============ -->
+  <div id="kbd-overlay" class="overlay kbd-overlay" hidden>
+    <div class="kbd-panel">
+      <header>
+        <h3>Keyboard shortcuts</h3>
+        <button class="icon-btn" id="kbd-close">×</button>
+      </header>
+      <dl class="kbd-list">
+        <dt>Bold</dt>                      <dd><span class="kbd-key">⌘B</span></dd>
+        <dt>Italic</dt>                    <dd><span class="kbd-key">⌘I</span></dd>
+        <dt>Underline</dt>                 <dd><span class="kbd-key">⌘U</span></dd>
+        <dt>Insert link</dt>               <dd><span class="kbd-key">⌘K</span></dd>
+        <dt>Find in chapter</dt>           <dd><span class="kbd-key">⌘F</span></dd>
+        <dt>Find / replace whole book</dt> <dd><span class="kbd-key">⌘⇧F</span></dd>
+        <dt>Quick-open chapter</dt>        <dd><span class="kbd-key">⌘P</span></dd>
+        <dt>Toggle distraction-free</dt>   <dd><span class="kbd-key">⌘.</span></dd>
+        <dt>Toggle author notes</dt>       <dd><span class="kbd-key">⌘⇧N</span></dd>
+        <dt>Toggle theme</dt>              <dd><span class="kbd-key">⌘⇧L</span></dd>
+        <dt>Show this help</dt>            <dd><span class="kbd-key">⌘/</span></dd>
+        <dt>Undo / Redo</dt>               <dd><span class="kbd-key">⌘Z</span> / <span class="kbd-key">⌘⇧Z</span></dd>
+      </dl>
+    </div>
+  </div>
+
+  <!-- ============ QUICK-OPEN PALETTE (⌘P) ============ -->
+  <div id="qopen-overlay" class="overlay qopen-overlay" hidden>
+    <div class="qopen-panel">
+      <input type="text" id="qopen-input" placeholder="Jump to a chapter…" />
+      <ul class="qopen-list" id="qopen-list"></ul>
+    </div>
+  </div>
+
+  <!-- ============ AUTHOR NOTES RAIL ============ -->
+  <aside class="notes-rail" id="notes-rail" aria-label="Author notes">
+    <div class="notes-rail-header">
+      <span>📝 Notes — this chapter</span>
+      <button class="icon-btn" data-notes="close" title="Close">×</button>
+    </div>
+    <textarea placeholder="Private notes for this chapter — not exported. Use this for ‘rewrite scene 3,’ character beats, etc."></textarea>
+    <div class="notes-rail-footer">Notes auto-save locally. They're never included in exports.</div>
+  </aside>
+
+  <!-- ============ SPRINT CHIP ============ -->
+  <div class="sprint-chip" id="sprint-chip" hidden>
+    <span class="sprint-chip-time">00:00</span>
+    <div class="sprint-chip-bar"><span></span></div>
+    <button class="sprint-chip-stop" title="Stop sprint">×</button>
+  </div>
+
+  <!-- ============ FOCUS-MODE EXIT BUTTON ============ -->
+  <button class="focus-exit-btn" id="focus-exit-btn" title="Exit focus mode (Esc)">⌧ Exit focus</button>
 
   <!-- ============ TOAST ============ -->
   <div id="toast" hidden></div>
